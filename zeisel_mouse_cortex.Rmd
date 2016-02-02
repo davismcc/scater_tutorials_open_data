@@ -1,0 +1,674 @@
+---
+title: 'Single-cell dataset: Zeisel mouse cortex'
+author: "Davis McCarthy"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        number_sections: true
+        code_folding: hide
+---
+
+```{r load-libararies, message=FALSE, warning=FALSE}
+library(scater)
+library(data.table) 
+library(cowplot)
+library(DT)
+library(knitr)
+opts_chunk$set(cache = TRUE)
+```
+
+# Load the Zeisel et al mouse cortex data
+
+First load the data for mRNA genes:
+
+```{r load-data-mrna}
+## download mRNA data
+mrna_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
+              nrows = 10, header = FALSE)
+mrna_meta <- as.data.frame(t(mrna_meta), stringsAsFactors = FALSE)
+colnames(mrna_meta) <- mrna_meta[2,]
+mrna_meta <- mrna_meta[-c(1,2),]
+rownames(mrna_meta) <- mrna_meta$cell_id
+datatable(mrna_meta[1:6,])
+mrna <- fread("http://linnarssonlab.org/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
+              skip = 10)
+mrna <- as.data.frame(mrna)
+rownames(mrna) <- mrna$V1
+mrna_gene_cluster <- mrna$V2
+mrna <- mrna[, -c(1,2)]
+colnames(mrna) <- mrna_meta$cell_id
+datatable(mrna[1:20, 1:6])
+```
+
+Next load the data for mitochondrial genes:
+
+```{r load-data-mtgenes}
+## download data for mitochondrial genes
+mtgenes_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_mito_17-Aug-2014.txt",
+                      nrows = 10, header = FALSE)
+mtgenes_meta <- as.data.frame(t(mtgenes_meta), stringsAsFactors = FALSE)
+colnames(mtgenes_meta) <- mtgenes_meta[2,]
+mtgenes_meta <- mtgenes_meta[-c(1,2),]
+rownames(mtgenes_meta) <- mtgenes_meta$cell_id
+datatable(mtgenes_meta[1:6,])
+mtgenes <- fread("http://linnarssonlab.org/blobs/cortex/expression_mito_17-Aug-2014.txt",
+                 skip = 10)
+mtgenes <- as.data.frame(mtgenes)
+rownames(mtgenes) <- mtgenes$V1
+mtgenes <- mtgenes[, -c(1,2)]
+colnames(mtgenes) <- mtgenes_meta$cell_id
+datatable(mtgenes[1:10, 1:6])
+```
+
+Finally load the data for ERCC spike-ins:
+
+```{r load-data-ercc}
+## download data for ERCC spike-ins
+ercc_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_spikes_17-Aug-2014.txt",
+                   nrows = 10, header = FALSE)
+ercc_meta <- as.data.frame(t(ercc_meta), stringsAsFactors = FALSE)
+colnames(ercc_meta) <- ercc_meta[2,]
+ercc_meta <- ercc_meta[-c(1,2),]
+rownames(ercc_meta) <- ercc_meta$cell_id
+datatable(ercc_meta[1:6,])
+ercc <- fread("http://linnarssonlab.org/blobs/cortex/expression_spikes_17-Aug-2014.txt",
+                   skip = 10)
+ercc <- as.data.frame(ercc)
+rownames(ercc) <- ercc$V1
+ercc <- ercc[, -c(1,2)]
+colnames(ercc) <- ercc_meta$cell_id
+datatable(ercc[1:10, 1:6])
+```
+
+Now, combine data and form into an SCESet object:
+
+```{r make-sceset}
+identical(mtgenes_meta[rownames(mrna_meta),], mrna_meta)
+identical(ercc_meta[rownames(mrna_meta),], mrna_meta)
+## cell metadata matches as long as cells are matched
+mtgenes <- mtgenes[, rownames(mrna_meta)]
+identical(colnames(mtgenes), colnames(mrna))
+ercc <- ercc[, rownames(mrna_meta)]
+identical(colnames(ercc), colnames(mrna))
+## combine expression values
+counts <- rbind(mrna, mtgenes, ercc)
+dim(counts)
+pd <- new("AnnotatedDataFrame", mrna_meta)
+fd <- data.frame(gene_cluster = c(mrna_gene_cluster, 
+                                rep(NA, (nrow(ercc) + nrow(mtgenes)))))
+rownames(fd) <- rownames(counts)
+fd <- new("AnnotatedDataFrame", fd)
+sce_zeisel_raw <- newSCESet(countData = counts, phenoData = pd, featureData = fd)
+sce_zeisel_raw
+```
+
+This data was produced using UMIs, so `cpm` should be the correct units for 
+analysis (transcript length becomes irrelevant as we are counting molecules 
+directly).
+
+# QC with `scater`
+
+Calculate QC metrics:
+
+```{r calc-qc-metrics}
+ercc_genes <- grep("ERCC", featureNames(sce_zeisel_raw))
+mt_genes <- grep("mt-", featureNames(sce_zeisel_raw))
+sce_zeisel_raw <- calculateQCMetrics(
+    sce_zeisel_raw, feature_controls = list(ERCC = ercc_genes, mt = mt_genes))
+```
+
+For this data set the original authors classified the cells into the broad cell
+classes shown in the output below.
+
+```{r, echo=TRUE, eval=TRUE}
+table(sce_zeisel_raw$level1class)
+```
+
+We will explore the cell types throughout the QC procedures described subsequently.
+
+---
+
+### 4. QC THE GENES
+
+
+Scater allows you to set minimum QC thresholds for a gene to be considered sufficiently expressed in your downstream analysis. Here,  using the inbuilt  ```is_exprs()``` function,  we enforce that a gene must have least one count in at least 98 cells (as this is the smallest group of cells as identified by Zeisel et al). The rationale behind this is that we would want to keep a gene if it was expressed in just one group of cells, but we don't want genes with very sparse expression overall.
+
+
+```{r, echo=TRUE, eval=TRUE, }
+keep_gene <- rowSums(is_exprs(sce_zeisel_raw)) >= 98
+fData(sce_zeisel_raw)$use <- keep_gene
+```
+
+We retain `r sum(keep_gene)` genes for the analysis and drop `r sum(!keep_gene)`
+lowly-expressed genes from the analysis.
+
+It can be useful to plot gene expression frequency versus mean expression level
+to assess the effects of technical dropout in the dataset. We fit a non-linear
+least squares curve for the relationship between expression frequency and mean
+expression and use this to define the number of genes above high technical 
+dropout and the numbers of genes that are expressed (here defined as at least 1 
+count) in at least 50% and at least 25% of cells. A subset of genes to be 
+treated as feature controls can be specified, otherwise any feature controls 
+previously defined are used.
+  
+
+```{r, echo=TRUE, eval=TRUE, fig.width=7, fig.height=5, fig.align="center"}
+plotQC(sce_zeisel_raw, type = "exprs") 
+```
+
+The ```plotQC()``` function provides several useful  QC plots,  such as the 
+example below that considers the the number of reads consumed by the top 50 
+expressed genes. Aside from spike-ins, these are typically mitochondrial and 
+housekeeping genes. Here, as with most single-cell experiments,  a large 
+proportion of reads are being are taken up by uninteresting biology.  
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+plotQC( sce_zeisel_raw[fData(sce_zeisel_raw)$use, ], 
+        type = "highest-expression", col_by_variable = "level1class" )
+```
+
+As well as the expected ERCC and mitochondrial genes among the most expressed, 
+we see *Actb*, involved in cell motility, structure and integrity.
+
+
+---
+
+### 3. QC THE CELLS
+
+A useful first step is flagging/failing poorly performing cells. This can be 
+done from the sample meta-data using the automated QC metrics generated above,  
+any additional sequencing metrics from sequencing aligner/mapping software,  
+and additional cell phenotypes such as from imaging. For the sake of 
+demonstration, here we focus on four metrics. Others you may want to consider 
+are % reads mapped to mitochondrial genes,  library PCR duplication rate,  
+and mean sequencing bias per cell.  
+
+```plotPhenoData()``` can be used to explore specific sample meta-data values. 
+For example, in the plots below we can see how different QC metrics distinguish 
+the cells.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.height=11, fig.width=12}
+p1 <- plotPhenoData(sce_zeisel_raw, aes_string(x = "log10_total_counts", 
+                                  y = "pct_counts_feature_controls_mt", 
+                                  colour = "level1class")) 
+p2 <- plotPhenoData(sce_zeisel_raw, aes_string(x = "log10_total_counts", 
+                                  y = "pct_counts_feature_controls_ERCC", 
+                                  colour = "level1class")) 
+p3 <- plotPhenoData(sce_zeisel_raw, aes_string(x = "total_features", 
+                                  y = "pct_counts_feature_controls_mt", 
+                                  colour = "level1class")) 
+p4 <- plotPhenoData(sce_zeisel_raw, aes_string(x = "total_features", 
+                                  y = "pct_counts_feature_controls_ERCC", 
+                                  colour = "level1class")) 
+plot_grid(p1, p2, p3, p4, labels = letters[1:4], nrow = 2)
+```
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.height=7, fig.width=8}
+plotPhenoData(sce_zeisel_raw, aes_string(x = "total_features", 
+                                  y = "pct_counts_feature_controls", 
+                                  colour = "filter_on_pct_counts_feature_controls",
+                                  shape_by = "filter_on_total_counts")) +
+    geom_vline(xintercept = 1000, linetype = 2)
+```
+
+Use QC metrics to select a subset of cells for use.
+
+```{r, echo=T, eval=T, message=F, warning=F}
+sce_zeisel_raw$use <- (sce_zeisel_raw$total_features > 1000 & #sufficient features 
+                           sce_zeisel_raw$total_counts > 5000 & # sufficient molucules counted
+                           !sce_zeisel_raw$filter_on_pct_counts_feature_controls & # sufficient endogenous RNA
+                           
+                           !sce_zeisel_raw$filter_on_total_features & # remove cells with unusual numbers of genes
+                           !sce_zeisel_raw$is_cell_control # controls shouldn't be used in downstream analysis
+)
+table(sce_zeisel_raw$use)
+```
+\  
+
+This would lead us to drop a further `r sum(!sce_zeisel_raw$use)` cells from 
+this dataset.
+
+Box plots aren't particularly useful for visualising sparse data, so 
+```plot()``` applied to an SCESet object helps visualise all cells as a 
+cumulative proportion of reads per cell. You can see from the plot below that 
+the two failed cells have curves that look more like the blank controls.  
+\   
+
+Cumulative expression plots:
+
+```{r cum-exprs-plots, fig.height=9, fig.width=10, fig.align="center"}
+plot(sce_zeisel_raw, block1 = "level1class", colour_by = "level2class", 
+     exprs_values = "counts")
+```
+
+We observe that certain cell types (e.g. oligodendrocytes and microglia) have a
+larger proportion of cells with their libraries accounted for by a small number
+of cells than to pyramidal cells. 
+
+```{r cum-exprs-plots-use, fig.height=9, fig.width=10, fig.align="center"}
+plot(sce_zeisel_raw, block1 = "level1class", colour_by = "use", 
+     exprs_values = "counts")
+```
+
+The plots above show that some (but certainly not all) of the cells we have 
+opted not to use have a large proportion of their library accounted for by a 
+handful of very highly-expressed genes.
+
+Scater allows users total flexibility to run their favourite dimension reduction
+methods,  as decribed [here]() and in the supporting help files. Here we use 
+```plotPCA()``` to further explore the cells. The t-SNE plot works particularly 
+nicely for this dataset to separate the different cell types as identified by 
+Zeisel et al.
+
+Let's take a look at a PCA plot:
+
+```{r pca-plot}
+sce_zeisel_raw <- plotPCA(sce_zeisel_raw, colour_by = "tissue", 
+                          return_SCESet = TRUE)
+plotReducedDim(sce_zeisel_raw, colour_by = "level1class")
+```
+
+Take a look using a diffusion map:
+
+```{r diff-map-plot}
+plotDiffusionMap(sce_zeisel_raw, colour_by = "level1class")
+```
+
+And finally look at a t-SNE plot:
+
+```{r diff-map-plot}
+plotTSNE(sce_zeisel_raw, colour_by = "level1class", rand_seed = 20160128)
+```
+
+The t-SNE gives nice, tight cell-type clusters.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=7, fig.height=6, fig.align="center"}
+plotPCA(sce_zeisel_raw, colour_by = "use", shape_by = "level1class" )
+```
+\  
+Another option available in `scater` is to conduct PCA on a set of QC metrics.
+The advantage of doing this is that the QC metrics focus on technical aspects of
+the libraries that are likely to distinguish problematics cells. Automatic 
+outlier detection on PCA plots using QC metrics is available to help identify 
+potentially problematic cells.
+
+By default, the following metrics are used for PCA-based outlier detection:
+
+* `pct_counts_top_100_features`
+* `total_features`
+* `pct_counts_feature_controls`
+* `n_detected_feature_controls`
+* `log10_counts_endogenous_features`
+* `log10_counts_feature_controls`
+
+A particular set of variables to be used can be specified with the 
+`selected_variables` argument as shown in the example below. 
+
+```{r pca-qc-metrics, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5, fig.align="center"}
+## PCA on the phenoData cannot handle missing values
+## for the exercise here we thus set cdna_recovered_in_ng_per_ul to 100 where 
+## there are NA values actually (creating a new dummy variable)
+sce_zeisel_raw <- plotPCA(sce_zeisel_raw, size_by = "total_features", 
+                          shape_by = "filter_on_total_features", 
+                          pca_data_input = "pdata", detect_outliers = TRUE, 
+                          return_SCESet = TRUE)
+```
+
+This dataset has already been carefully QC'd by the original authors and this 
+PCA plot confirms that, with the PCA on QC metrics detecting no further outliers.
+
+
+With `scater`, any specific set of features based on prior knowledge can be used for PCA, t-SNE or diffusion maps. A feature set to use can be defined by supplying the `feature_set` argument to `plotPCA`, `plotTSNE` or `plotDiffusionMap`. This allows, for example, using only housekeeping features or control features or cell cycle genes to produce reduced-dimension plots. The plots below use only the spike-in genes defined as such earlier.
+
+```{r pca-difmap-ercc-genes, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5, fig.align="center"}
+p1 <- plotPCA(sce_zeisel_raw, feature_set = fData(sce_zeisel_raw)$is_feature_control, 
+               colour_by = "use", shape_by = "tissue", 
+               size_by = "outlier" ) + ggtitle("PCA")
+p2 <- plotDiffusionMap(sce_zeisel_raw, 
+                       feature_set = fData(sce_zeisel_raw)$is_feature_control, 
+                       colour_by = "use", shape_by = "tissue", 
+                       size_by = "outlier" ) + ggtitle("Diffusion map")
+multiplot(p1, p2, cols = 2)
+```
+
+In addition to outliers, we prefer to use cells that have a good coverage of 
+detected genes. After gene filtering, we demand that cells have detectable 
+expression for at least 10% of retained genes.
+
+```{r further-cell-filtering}
+sce_zeisel_raw$use <- (sce_zeisel_raw$use | 
+                           )
+```
+
+
+
+---
+
+### 5. NORMALISE THE DATA
+
+Once you have filtered cells and genes,  a next step is to explore technical drivers of variability in the data to inform data normalisation before downstream analysis. 
+
+Experimental design is a critical, but neglected, aspect of \gls{scrnaseq} studies. To the best of my knowledge, methods like those described in this section for exploring experimental and QC variables and the experimental design, do not feature in any scRNA-seq software packages apart from `scater`. There are a very large number of potential confounders, artifacts and biases in \gls{scrnaseq} studies. Exploring the effects of such explanatory variables (both those recorded during the experiment and computed QC metrics) is crucial for appropriate modeling of the data. The \scater\ package provides a set of methods specifically for quality control of experimental and explanatory variables, which will be demonstrated briefly here.
+
+Using the ```plotPCA()``` function we can see that principal component one is driven by differences between the two machine replicates,  which in turn is due to differences in gene coverage. Differences in number of detected genes is a common driver of cell clustering  and can be result of biology (e.g. different cell types, cell cycle). However, it often has a strong technical component due to variably recovered RNA,  reverse transcription,  or library amplification. Its effect can also be notably non-linear,  affecting low expressed and high expressed genes differently. The ```plotQC()``` function can be used to explore the the marginal % variance explained (per gene) of the various technical factors. In the second plot we can see that it's not unusual for gene coverage to explain more than 10% of the expression variance of a gene. 
+
+```{r pca-diffmap-normalisation, echo=T, eval=T, message=F, warning=F, fig.width=7, fig.height=5, fig.align="center"}
+plotPCA( sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use],  # only plot genes and cells of interest
+         colour_by = "level1class", shape_by = "tissue", size_by = "total_features" )
+```
+
+The relative importance of different explanatory variables can be explored with some of the `plotQC` function options. Supplying the `type = "expl"` argument to `plotQC` computes the marginal $R^2$ for each variable in the \textsf{SCESet} when fitting a linear model regressing expression values for each gene against just that variable, and displays a density plot of the gene-wise marginal $R^2$ values for the variables. The default approach looks at all variables in the \textsf{phenoData} slot of the object and plots the top `nvars_to_plot` variables (default is 10). 
+
+Alternatively, one can choose a subset of variables to plot in this manner, which we do here. The density curves for marginal $R^2$ show the relative importance of different variables for explaining variance in expression between cells. 
+
+```{r plotqc-expl-vars, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=4.5, fig.align="center"}
+plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+        type = "explanatory-variables", 
+        variables = c("pct_counts_top_100_features", "total_features", 
+                      "pct_counts_feature_controls", "level1class",
+                      "n_detected_feature_controls", 
+                      "log10_counts_endogenous_features",
+                      "log10_counts_feature_controls", "tissue") )
+```
+
+
+This analysis indicates that total number of features detected and the sequencing depth (number of counts) for endogenous genes, in particular, have substantial
+explanatory power for many genes, so these variables are good candidates for
+conditioning out in a normalisation step, or including in downstream statistical
+models. The number of detected feature controls (spike-in genes) does not appear to be an important explanatory variable.
+
+One can also easily produce plots to identify principal components that correlate with experimental and QC variables of interest. The function `plotQC` with the option `type = "find-pcs"` ranks the principal components in decreasing order of $R^2$ from a linear model regressing PC value against the variable of interest. The default behaviour is to show the relationships between the variable of interest and the six principal components with the strongest relationship to the variable (as measured by $R^2$). This works both for continous and categorical variables. This type of plot  can indicate which explanatory variables may be driving differences between cells as detected by PCA and highlight which PCs are associated with the variable. The "total features" variable shows very strong correlation with both principal components 1 and 2.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=6, fig.align="center"}
+p1 <- plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+        type = "find-pcs", variable = "total_features" )
+p2 <- plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+        type = "find-pcs", variable = "level1class" )
+plot_grid(p1, p2, ncol = 2, labels = letters[1:2])
+```
+
+Very clearly, the first principal component is affected strongly by the total number of features detected in a cell.
+
+The `plotQC()` function can also be used to produce a pairs plot of explanatory variables (with the same calls as above, but with `method = "pairs"`). The plot below shows this use case for looking at the % counts from the top 100 most-expressed genes, the total number of expressed genes, the % of counts from feature controls, the number of detected feature controls, the  number of counts (on the log-10 scale) from endogenous features, the number of counts (log-10 scale) from feature controls and sample type. The explanatory variables are ordered by the median $R^2$ of the variable across all genes, and this value is reported on the plot. This type of plot is useful for finding correlations between experimental and QC variables with substantial explanatory power.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=8, fig.align="center"}
+plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+        type = "expl", method = "pairs", 
+        variables = c("pct_counts_top_100_features", "total_features", 
+                      "pct_counts_feature_controls", 
+                      "n_detected_feature_controls", 
+                      "log10_counts_endogenous_features",
+                      "log10_counts_feature_controls", "level1class"),
+        theme_size = 6)
+
+```
+\  
+
+After important explanatory variables have been identified with the tools shown above, their effects can be accounted for in subsequent statistical models, or they can be conditioned out using `normaliseExprs()`, if so desired. If a design matrix incorporating a selection of explanatory variables is supplied as an argument to `normaliseExprs`, then normalised expression values returned for each feature will be the residuals from a linear model fitted with the design matrix, after any size-factor normalisation has been applied to the expression data. 
+
+Normalising single-cell RNA-seq data is a topic in its infancy, but many of the basic principles still apply. How much you choose to initially correct for technical factors depends on your question of interest and the ease with which they can be accounted for in downstream models.
+
+In `scater` it is easy to perform size-factor normalisation using the "TMM" approach (the default in the [edgeR]() package), the "RLE" approach (default in the [DESeq]() package), an "upper-quartile approach" (as proposed by Bullard et al (2010)) or simple scaling by total counts. The code below demonstrates how to carry out size-factor normalisation on a subsetted SCESet object, normalising either to ERCC spike-in genes or to endogenous genes. Under certain circumstances either may be appropriate. Careful thought should be given to applying scale-factor normalisation as underlying assumptions may not be appropriate for all single-cell datasets.
+
+```{r pca-norm-plots, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
+## subset to form a QC'd version of the data
+sce_zeisel_qc <- sce_zeisel_raw[fData(sce_zeisel_raw)$use | 
+                            fData(sce_zeisel_raw)$is_feature_control, 
+                        sce_zeisel_raw$use]
+endog_genes <- !fData(sce_zeisel_qc)$is_feature_control
+sce_zeisel_qc <- normaliseExprs(sce_zeisel_qc, method = "RLE", 
+                                feature_set = endog_genes)
+## subset again so that only endogenous genes are used
+scDataQC <- scDataQC[fData(scDataQC)$use,]
+plt_pca_ercc_norm <- plotPCA(
+    scDataQC, exprs_values = "ercc_norm_exprs", size_by = "total_features",  
+    colour_by = "sample_type", shape_by = "c1_machine") + 
+    ggtitle("PCA - ERCC size-factor normalisation") + 
+    theme(legend.position = "bottom")
+plt_pca_endog_norm <- plotPCA(
+    scDataQC, exprs_values = "endog_norm_exprs", size_by = "total_features",  
+    colour_by = "sample_type", shape_by = "c1_machine") + 
+    ggtitle("PCA - endogenous size-factor normalisation") + 
+    theme(legend.position = "bottom")
+multiplot(plt_pca_ercc_norm, plt_pca_endog_norm, cols = 2)
+```
+
+In the PCA plots above we see that the first principal component seems to separate cells based on the C1 machine used to process them. We would prefer such technical effects to be removed by normalisation, so below we demonstrate a further alternative approach. We see how "customised" normalisation approaches can be easily incorporated into the `scater` workflow.
+
+In this example we normalise and standardise counts conditioned on expression level, showing the PCA for the corrected data. One advantage of this approach is that a biologically 'noisy' gene is naturally defined as one with greater dispersion than other genes at a similar expression level. In the normalised data these are genes with a mean absolute deviation greater than 1. 
+
+```{r custom-norm-exprs, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=6, fig.align="center"}
+
+rp <- scData$c1_machine[scData$use] # replicates
+mn <- sapply( 1:2,  # mean log expression per replicate
+              function(r) rowMeans(exprs( scData )[fData( scData )$use, 
+                                                   scData$use][, rp == r])) 
+
+exprsNorm <- counts( scData )[fData( scData )$use, pData( scData )$use] # read counts to normalise
+wn <- floor( 0.05*nrow( scData ) ) # consider a sliding window of 10% of genes
+for (r in 1:2) { # normalise per replicate
+  exprsNorm[, rp == r] <- t( sapply( row.names( exprsNorm ), function(g){
+    nh <- head( sort( abs( mn[, r] - mn[g, r] ) ), wn ) # neighbourhood of similarly expressing genes
+    nh <- exprsNorm[names( nh ), rp == r]
+    nh <- log2( t( t( nh ) / colSums( nh ) ) * 1e5 + 1 ) # locally normalise
+    nh <- nh - mean( nh ) # locally standardise 
+    nh <- nh / mean( abs( nh ) )
+    nh[1, ]
+  } ) )  
+}
+
+### add normalised expression values to SCESet object and make PCA plot
+norm_exprs(scDataQC) <- exprsNorm
+plt_cond_norm <- plotPCA(
+    scDataQC, exprs_values = "norm_exprs", shape_by = "c1_machine", 
+        colour_by = "sample_type", size_by = "total_features", 
+        scale_features = FALSE) + 
+    ggtitle("PCA - expression conditional normalisation") + 
+    theme(legend.position = "bottom")
+plt_cond_norm
+```
+\    
+
+After this normalisation procedure we see that the first principal component now separates cells from the two patients and neither the first nor second principal component appears influenced by the C1 machine used to process the cells. 
+
+Thus, after convenient pre-processing, QC and normalisation with \scater, the data
+are well organised (with feature and cell metadata and many data transformations),
+clean and tidy, and are ready for further statistical modeling and analysis.
+
+---
+
+### 7. DOWNSTREAM ANALYSIS
+
+Expression data at a single-cell resolution not only allows testing for differential expression,  but exploring how this is dependent on sub-types of cells and/or how genes coexpress with each other across cells. As with normalisation,  single-cell analysis methodology is an area in its infancy and deserving of discussion that is beyond this case study. Here we simply demonstrate how QC'ed and normalised data contained within an SCESet object allows for easy downstream interrogation. Let's assume we are interested in defining differential expression as change in expression frequency. This can be done with a standard generalised linear model and the ```qvalue``` package to control false discovery rates. 
+\    
+
+```{r de-testing, echo=T, eval=T, message=F, warning=F, fig.align="center"}
+
+library( "qvalue" )
+
+sm <- pData( scData[fData( scData )$use, pData( scData )$use] )$sample_type # the two samples
+sm <- scDataQC$sample_type
+de <- data.frame( t( apply( norm_exprs(scDataQC) > 0, 1, # test change in expression frequency 
+                            function( y ) coef( summary( glm( y ~ sm,  family = "binomial" ) ) )[2, c( 1, 4 )] ) ), 
+                  check.names = FALSE )
+de$qvalue <- qvalue( de[, "Pr(>|z|)"], fdr.level = 0.05 )$qvalues # control for false disovery rate
+de <- de[order( de$qvalue, decreasing = FALSE ), ] # order by global statistical evidence
+head( de )
+
+### scater-ised version
+sm <- scDataQC$sample_type # the two samples
+de <- data.frame( t( apply( norm_exprs(scDataQC) > 0, 1, # test change in expression frequency 
+                            function( y ) coef(summary(glm(y ~ sm, family = "binomial" ) ) )[2, c(1,4)])),  check.names = FALSE)
+de$qvalue <- qvalue( de[, "Pr(>|z|)"], fdr.level = 0.05 )$qvalues # control for false disovery rate
+de <- de[order( de$qvalue, decreasing = FALSE ), ] # order by global statistical evidence
+head( de )
+```
+
+In `scater` the `plotExpression` function enables the convenient visualisation of expression values for a set of features. Here, the expression values for the six most DE genes for expression frequency between patients are shown. The units for expression in the plot can be defined with the `exprs_values` argument (the expression values must exist with the provided name in the `assayData` slot of the SCESet object; if not the default `exprs` values will be used, with a warning). As with other plots in `scater` we can use phenotype data variables to define the colour and shapr of the points.
+
+```{r plot-exprs-de, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=8, fig.height=5}
+plotExpression(scDataQC, rownames(de)[1:6], x = "sample_type", ncol = 3)
+plotExpression(scDataQC, rownames(de)[1:6], ncol = 3, exprs_values = "counts",
+               x = "sample_type", colour_by = "log10_counts_endogenous_features")
+scDataQC$c1_machine <- as.factor(scDataQC$c1_machine)
+plotExpression(scDataQC, rownames(de)[1:6], exprs_values = "norm_exprs", 
+               x = "sample_type", colour_by = "total_features", 
+               shape_by = "c1_machine", ncol = 3)
+```
+\  
+
+One natural question is if differentially expressed genes are co-expressed. Clustering of the genes,  using Gaussian mixture models,  suggests that the immunoglobulin genes with  increased expression in patient B form a tight coexpression cluster (shown in red) that is distinct from the other differentially expressed genes.  
+\  
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=6, fig.height=12, fig.align="center", cache=TRUE}
+
+library( "mclust" )
+
+coexprsA <- cor( t( norm_exprs(scDataQC)[row.names(de)[de$qvalue < 0.05], 
+                              sm == "cell from patient A"] ),  # rank coexpression
+                 method = "spearman" )
+coexprsA <- data.frame( cmdscale( (1 - coexprsA) / 2 ) ) # multidimensional scaling of the coexpression
+clustA <- Mclust( coexprsA, modelNames = "VVV" ) # model based clustering of the differentially expressed genes
+
+coexprsB <- cor( t( norm_exprs(scDataQC)[row.names(de)[de$qvalue < 0.05], 
+                                         sm == "cell from patient B"] ),  # repeat
+                method = "spearman" )
+coexprsB <- data.frame( cmdscale( (1 - coexprsB) / 2 ) ) 
+clustB <- Mclust( coexprsB, modelNames = "VVV" ) 
+
+gns <- fData( scDataQC )[row.names( de )[de$qvalue < 0.05], "hgnc_symbol"] # differentially expressed genes' symbols
+cls <- c( "firebrick", "grey30" )[clustB$classification] # colour by clustering
+eff <- rank( de$Estimate[de$qvalue < 0.05] ) / 60 # size by relative expression in patient B 
+
+par( mfrow = c( 2, 1 ) )
+plot( clustA, what = "density", bty = "n", xlab = "patient A dimension one",  ylab = "patient A dimension two" )
+text( coexprsA[, 1], coexprsA[, 2], gns, cex = eff, col = cls )
+plot( clustB, what = "density", bty = "n", xlab = "patient B dimension one",  ylab = "patient B dimension two" )
+text( coexprsB[, 1], coexprsB[, 2], gns, cex = eff, col = cls )
+
+```
+\  
+
+---
+
+### 8.  TECHNICAL STUFF
+
+
+Scater has been tested on Mac OS X and Linux environments and requires the R packages:
+
+* Biobase
+* BiocGenerics
+* ggplot2
+* methods
+
+and imports the packages:
+
+* biomaRt
+* data.table
+* dplyr
+* edgeR
+* grid
+* limma
+* matrixStats
+* plyr
+* reshape2
+* rhdf5
+* rjson
+* viridis
+
+This case study was run using the following platform and R package versions:  
+\  
+
+```{r, echo=FALSE, eval=TRUE}
+
+sessionInfo()
+
+```
+
+
+```{r figures-for-paper, echo=FALSE, results='hide'}
+### Figures for the paper
+if ( requireNamespace("cowplot") ) {
+    ## QC figure
+    p1 <- plot( scData, colour_by = "sample_type", exprs_values = "counts")
+    p2 <- plotPCA( scData, shape_by = "sample_type", 
+                   pca_data_input = "pdata", detect_outliers = TRUE,
+                   selected_variables = c("cdna_recovered_in_ng_per_ul_no_miss",
+                                          "pct_counts_top_100_features",
+                                          "total_features", 
+                                          "pct_counts_feature_controls",
+                                          "n_detected_feature_controls", 
+                                          "log10_counts_endogenous_features",
+                                          "log10_counts_feature_controls"))
+    p3 <- plotQC( scData[fData( scData )$use, pData( scData )$use], 
+        type = "highest-expression", 
+        col_by_variable = "sample_type" )
+    p4 <- plotQC(scData, type = "exprs") 
+    p5 <- plotQC( scData[fData( scData )$use, scData$use], 
+        type = "explanatory-variables", 
+        variables = c("pct_counts_top_100_features", "total_features", 
+                      "pct_counts_feature_controls", "c1_machine",
+                      "n_detected_feature_controls", 
+                      "log10_counts_endogenous_features",
+                      "log10_counts_feature_controls", "sample_type") )
+    p6 <- plotQC( scData[fData( scData )$use, scData$use], 
+        type = "find-pcs", variable = "total_features")
+    figplot1 <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, 
+                                  labels = letters[1:6], ncol = 2)
+    cowplot::save_plot("../figures/figure2.pdf", figplot1, ncol = 2, nrow = 3,
+                       base_height = 5, base_aspect_ratio = 1.4)
+    cowplot::save_plot("../figures/figure2.png", figplot1, ncol = 2, nrow = 3,
+                       base_height = 5, base_aspect_ratio = 1.4)
+    
+    ## dimension reduction figure
+    p1 <- plotPCA(scData[, scData$use], size_by = "total_features", 
+                  colour_by = "sample_type", 
+                  shape_by = "c1_machine") + ggtitle("PCA - all genes") + 
+        theme(legend.position = "bottom")
+    p2 <- plotTSNE(scData[, scData$use], size_by = "total_features", 
+                   colour_by = "sample_type", 
+                   shape_by = "c1_machine", rand_seed = 20151225) + 
+        ggtitle("t-SNE - all genes") + 
+        theme(legend.position = "bottom")
+    p3 <- plotDiffusionMap( scData[, scData$use], size_by = "total_features", 
+                            colour_by = "sample_type", 
+                            shape_by = "c1_machine") + 
+        ggtitle("Diffusion map - all genes") +
+        theme(legend.position = "bottom")
+    p4 <- plotPCA(scData[, scData$use], feature_set = cell_cycle_genes, 
+                  colour_by = featureNames(scData)[most_exprs_ccycle[8]], 
+                  shape_by = "sample_type") + ggtitle("PCA - cell cycle genes") + 
+        theme(legend.position = "bottom")
+    p5 <- plotTSNE(scData[, scData$use], feature_set = cell_cycle_genes, 
+                   colour_by = featureNames(scData)[most_exprs_ccycle[8]], 
+                   shape_by = "sample_type", rand_seed = 20151225) + 
+        ggtitle("t-SNE - cell cycle genes") + 
+        theme(legend.position = "bottom")
+    p6 <- plotDiffusionMap( scData[, scData$use], feature_set = cell_cycle_genes, 
+                            colour_by = featureNames(scData)[most_exprs_ccycle[8]], 
+                            shape_by = "sample_type") + 
+        ggtitle("Diffusion map - cell cycle genes") +
+        theme(legend.position = "bottom")
+    
+    figplot2 <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, plt_pca_ercc_norm,
+                                   plt_pca_endog_norm, plt_cond_norm,
+                                   labels = letters[1:9], ncol = 3,
+                                   rel_heights = c(1.1, 1))
+    cowplot::save_plot("../figures/figure4.pdf", figplot2, ncol = 3, nrow = 3,
+                       base_height = 5, base_aspect_ratio = 0.8)
+    cowplot::save_plot("../figures/figure4.png", figplot2, ncol = 3, nrow = 3,
+                       base_height = 5, base_aspect_ratio = 0.8)
+}
+
+```
+
+
+
+
+
+
+
+

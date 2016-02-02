@@ -1,6 +1,6 @@
 # `scater` tutorials with open-access data
 
-A set of tutorials using the scater package to QC publicly available
+A set of tutorials using the [scater]() package to QC publicly available
 single-cell expression data sets
 
 ## See what it looks like
@@ -32,6 +32,23 @@ git clone https://github.com/davismcc/scater_tutorials_open_data.git
 Or you can download the zipped version of the repository from this
 page.
 
+To work through the tutorials you will need to have the following
+R/Bioconductor packages installed:
+* `scater`
+* `data.table`
+* `cowplot`
+* `DT`
+* `knitr`
+
+See the [scater GitHub page](https://github.com/davismcc/scater) for
+installation instructions for that package. The rest can be installed
+with:
+```{r}
+install.packages(c("data.table", "cowplot", "DT", "knitr"))
+```
+
+Enjoy!
+
 ---
 
-Davis McCarthy, February 2016
+Davis McCarthy, February 2016 - #researchparasites
