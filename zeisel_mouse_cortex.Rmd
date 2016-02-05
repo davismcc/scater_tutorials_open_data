@@ -658,7 +658,7 @@ slot of the SCESet object; if not the default `exprs` values will be used,
 with a warning). As with other plots in `scater` we can use phenotype data 
 variables to define the colour and shape of the points.
 
-```{r plot-exprs-de, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=8, fig.height=5}
+```{r plot-exprs-de, cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=8, fig.height=5}
 plotExpression(sce_zeisel_qc, rownames(de)[1:6], x = "level1class", ncol = 3,
                colour_by = "level1class") +
     theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
