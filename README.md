@@ -10,7 +10,9 @@ with R Markdown showing code and results.
 
 * Analysis of
   [Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138)
-  data can be seen [here](). Kudos to the authors of that study who
+  data can be seen
+  [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html). Kudos
+  to the authors of that study who
   have made their data available at the
   [Linnarsson Lab website](http://linnarssonlab.org/blobs/cortex/).
 * More to follow...
