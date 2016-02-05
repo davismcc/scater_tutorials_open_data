@@ -14,7 +14,7 @@ with R Markdown showing code and results.
   [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html). Kudos
   to the authors of that study who
   have made their data available at the
-  [Linnarsson Lab website](http://linnarssonlab.org/blobs/cortex/).
+  [Linnarsson Lab website](http://linnarssonlab.org/cortex/).
 * More to follow...
 
 
