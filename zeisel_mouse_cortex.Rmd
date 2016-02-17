@@ -17,7 +17,7 @@ library(data.table)
 library(cowplot)
 library(DT)
 library(knitr)
-opts_chunk$set(cache = TRUE, warning = FALSE)
+opts_chunk$set(cache = FALSE, warning = FALSE)
 ```
 
 # Load the Zeisel et al mouse cortex data
