@@ -8,12 +8,8 @@ single-cell expression data sets
 Check out the results of the analyses in these HTML reports produced
 with R Markdown showing code and results.
 
-* Analysis of
-  [Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138)
-  data with `scater` can be seen
-  [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html). Kudos
-  to the authors of that study who
-  have made their data available at the
+* Analysis of a large mouse cortex dataset with `scater` can be seen
+  [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html). Kudos to the  [Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138), authors of that study, who  have made their data available at the
   [Linnarsson Lab website](http://linnarssonlab.org/cortex/).
 * More to follow...
 

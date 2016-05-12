@@ -17,6 +17,7 @@ library(data.table)
 library(cowplot)
 library(DT)
 library(knitr)
+library(scran)
 opts_chunk$set(cache = FALSE, warning = FALSE)
 ```
 
@@ -301,7 +302,7 @@ plotReducedDim(sce_zeisel_raw, colour_by = "level1class")
 ```
 
 Take a look using a diffusion map (better suited to cells distributed along a 
-process:
+process):
 
 ```{r diff-map-plot}
 plotDiffusionMap(sce_zeisel_raw, colour_by = "level1class")
@@ -428,10 +429,10 @@ plotPCA( sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use],
 One can also easily produce plots to identify principal components that 
 correlate with experimental and QC variables of interest. The function `plotQC`
 with the option `type = "find-pcs"` ranks the principal components in decreasing
-order of $R^2$ from a linear model regressing PC value against the variable of
+order of R-squared from a linear model regressing PC value against the variable of
 interest. The default behaviour is to show the relationships between the 
 variable of interest and the six principal components with the strongest
-relationship to the variable (as measured by $R^2$). This works both for 
+relationship to the variable (as measured by R-squared). This works both for 
 continous and categorical variables. This type of plot  can indicate which
 explanatory variables may be driving differences between cells as detected by 
 PCA and highlight which PCs are associated with the variable. The "total 
@@ -449,10 +450,17 @@ plot_grid(p1, p2, ncol = 2, labels = letters[1:2])
 
 Very clearly, the first principal component is affected strongly by the total number of features detected in a cell.
 
-The relative importance of different explanatory variables can be explored with some of the `plotQC` function options. Supplying the `type = "expl"` argument to `plotQC` computes the marginal $R^2$ for each variable in the \textsf{SCESet} when fitting a linear model regressing expression values for each gene against just that variable, and displays a density plot of the gene-wise marginal $R^2$ values for the variables. The default approach looks at all variables in the \textsf{phenoData} slot of the object and plots the top `nvars_to_plot` variables (default is 10). 
+The relative importance of different explanatory variables can be explored with 
+some of the `plotQC` function options. Supplying the `type = "expl"` argument to
+`plotQC` computes the marginal R-squared for each variable in the 
+\textsf{SCESet} when fitting a linear model regressing expression values for 
+each gene against just that variable, and displays a density plot of the 
+gene-wise marginal R-squared values for the variables. The default approach 
+looks at all variables in the \textsf{phenoData} slot of the object and plots 
+the top `nvars_to_plot` variables (default is 10). 
 
 Alternatively, one can choose a subset of variables to plot in this manner, 
-which we do here. The density curves for marginal $R^2$ show the relative
+which we do here. The density curves for marginal R-squared show the relative
 importance of different variables for explaining variance in expression between
 cells. In the plot we can see that it's not unusual for gene coverage 
 to explain more than 10% of the expression variance of a gene. 
@@ -468,14 +476,24 @@ plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use],
 ```
 
 
-This analysis indicates that total number of features detected and the sequencing depth (number of counts) for endogenous genes, in particular, have substantial
-explanatory power for many genes, so these variables are good candidates for
-conditioning out in a normalisation step, or including in downstream statistical
-models. The number of detected feature controls (spike-in genes) does not appear to be an important explanatory variable.
+This analysis indicates that total number of features detected and the 
+sequencing depth (number of counts) for endogenous genes, in particular, have 
+substantial explanatory power for many genes, so these variables are good 
+candidates for conditioning out in a normalisation step, or including in 
+downstream statistical models. The number of detected feature controls 
+(spike-in genes) does not appear to be an important explanatory variable.
 
 
-
-The `plotQC()` function can also be used to produce a pairs plot of explanatory variables (with the same calls as above, but with `method = "pairs"`). The plot below shows this use case for looking at the % counts from the top 100 most-expressed genes, the total number of expressed genes, the % of counts from feature controls, the number of detected feature controls, the  number of counts (on the log-10 scale) from endogenous features, the number of counts (log-10 scale) from feature controls and sample type. The explanatory variables are ordered by the median $R^2$ of the variable across all genes, and this value is reported on the plot. This type of plot is useful for finding correlations between experimental and QC variables with substantial explanatory power.
+The `plotQC()` function can also be used to produce a pairs plot of explanatory 
+variables (with the same calls as above, but with `method = "pairs"`). The plot 
+below shows this use case for looking at the % counts from the top 100 
+most-expressed genes, the total number of expressed genes, the % of counts from 
+feature controls, the number of detected feature controls, the  number of counts
+(on the log-10 scale) from endogenous features, the number of counts 
+(log-10 scale) from feature controls and sample type. The explanatory variables 
+are ordered by the median R-squared of the variable across all genes, and this 
+value is reported on the plot. This type of plot is useful for finding correlations 
+between experimental and QC variables with substantial explanatory power.
 
 ```{r, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=8, fig.align="center"}
 plotQC(sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
@@ -515,6 +533,8 @@ basic principles still apply. How much you choose to initially correct for
 technical factors depends on your question of interest and the ease with which 
 they can be accounted for in downstream models.
 
+## Size-factor normalisation
+
 In `scater` it is easy to perform size-factor normalisation using the "TMM" 
 approach (the default in the 
 [edgeR](https://bioconductor.org/packages/release/bioc/html/edgeR.html) package), 
@@ -522,13 +542,11 @@ the "RLE" approach (default in
 the [DESeq](https://bioconductor.org/packages/release/bioc/html/DESeq.html) package), 
 an "upper-quartile approach" (as proposed by 
 [Bullard et al (2010)](http://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-11-94)) 
-or simple scaling by total counts. 
-
-The code below demonstrates how to carry out size-factor normalisation on a 
-subsetted SCESet object, normalising either to ERCC spike-in genes or to 
-endogenous genes. Under certain circumstances either may be appropriate. 
-Careful thought should be given to applying scale-factor normalisation as 
-underlying assumptions may not be appropriate for all single-cell datasets.
+or simple scaling by total counts. These approaches were designed for bulk 
+RNA-seq and thus are not optimal for single-cell data, but are provided for 
+convenience and interest. Careful thought should be given to applying these 
+scale-factor normalisation methods as underlying assumptions may not be 
+appropriate for all single-cell datasets.
 
 For instance, the RLE size-factor method does not work for this data set, as 
 the distribution of expression values for each cell has too many zeroes for this 
@@ -539,33 +557,56 @@ method fails. If inappropriate normalisation factors are computed, a warning is
 provided and normalisation factors are set to 1 (the same as applying 
 `method="none"`).
 
+However, [Lun et al (2016)](http://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0947-7) recently published a size-factor normalisation method specifically designed
+for scRNA-seq data. This method performs much better on single-cell data and its
+implementation in the Bioconductor package `scran` allows seamless integration 
+into the `scater` workflow. (The `scran` package itself depends on `scater`).
+
+We recommend using the `scran` size-factor normalisation approach and 
+demonstrate its use here.
+
+The code below demonstrates how to carry out size-factor normalisation on a 
+subsetted SCESet object, normalising either to ERCC spike-in genes (not shown) 
+or to endogenous genes. Under certain circumstances either may be appropriate. 
+
+
 ```{r sizefactor-normalisation, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
 ## subset to form a QC'd version of the data
 sce_zeisel_qc <- sce_zeisel_raw[fData(sce_zeisel_raw)$use | 
                             fData(sce_zeisel_raw)$is_feature_control, 
                         sce_zeisel_raw$use]
 endog_genes <- !fData(sce_zeisel_qc)$is_feature_control
-sce_zeisel_qc <- normaliseExprs(sce_zeisel_qc, method = "upperquartile", 
-                                feature_set = endog_genes, p = 0.99)
-summary(sce_zeisel_qc$norm_factors)
+
+## size factor normalisation with scran 
+qclust <- quickCluster(sce_zeisel_qc)
+sce_zeisel_qc <- computeSumFactors(sce_zeisel_qc, clusters = qclust)
+summary(sce_zeisel_qc$size_factor)
+sce_zeisel_qc <- normalise(sce_zeisel_qc)
+
+# sce_zeisel_qc <- normaliseExprs(sce_zeisel_qc, method = "upperquartile", 
+#                                 feature_set = endog_genes, p = 0.99)
+# set_exprs(sce_zeisel_qc, "norm_exprs_sf") <- norm_exprs(sce_zeisel_qc)
+# summary(sce_zeisel_qc$norm_factors)
 ```
 
-Here normalisation to the 99th percentile of the libraries is shown - this 
-avoids using extremely low values, but also avoids the normalisation being 
-unduly influenced by a small number of very highly expressed genes.
+Here normalisation using size factors using the `computeSumFactors` function from
+the `scran` package is undertaken. The `quickCluster` method from `scran` was 
+used to obtain a rough clustering of cells to guide the size-factor computation
+step.
 
-We can investigate the effects of normalisation easily with PCA plots, here 
+We can investigate the effects of normalisation with PCA plots, here 
 using only endogenous gene expression values to produce the plots.
 
 ```{r pca-norm-plots, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
 ## subset again so that only endogenous genes are used
 plt_pca_prenorm <- plotPCA(
-    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "exprs", 
+    sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+    exprs_values = "exprs", 
     size_by = "total_features",  colour_by = "level1class", shape_by = "tissue") + 
     ggtitle("PCA - no normalisation") + 
     theme(legend.position = "bottom")
 plt_pca_endog_norm <- plotPCA(
-    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "norm_exprs", 
+    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "exprs", 
     size_by = "total_features",  colour_by = "level1class", shape_by = "tissue") + 
     ggtitle("PCA - endogenous size-factor normalisation") + 
     theme(legend.position = "bottom")
@@ -584,13 +625,14 @@ endothelial-mural cells are better differentiated with the normalised data.
 ```{r tsne-norm-plots, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
 ## subset again so that only endogenous genes are used
 plt_tsne_prenorm <- plotTSNE(
-    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "exprs", 
+    sce_zeisel_raw[fData(sce_zeisel_raw)$use, sce_zeisel_raw$use], 
+    exprs_values = "exprs", 
     size_by = "total_features",  colour_by = "level1class", shape_by = "tissue",
     random_seed = 20160203) + 
     ggtitle("t-SNE - no normalisation") + 
     theme(legend.position = "bottom")
 plt_tsne_endog_norm <- plotTSNE(
-    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "norm_exprs", 
+    sce_zeisel_qc[fData(sce_zeisel_qc)$use,], exprs_values = "exprs", 
     size_by = "total_features",  colour_by = "level1class", shape_by = "tissue",
     random_seed = 20160203) + 
     ggtitle("t-SNE - endogenous size-factor normalisation") + 
@@ -598,6 +640,137 @@ plt_tsne_endog_norm <- plotTSNE(
 multiplot(plt_tsne_prenorm, plt_tsne_endog_norm, cols = 2)
 ```
 
+
+## Regressing out explanatory variables
+
+In the section above we used the `plotQC()` function to identify the following
+technical variables that (marginally) explained a substantial proportion of the
+variance for many genes:
+* `log10_counts_endogenous_features`
+* `pct_counts_top_100_features`
+* `pct_counts_feature_controls`.
+The `normaliseExprs()` function enables such explanatory variables to be 
+regressed out of the expression values for downstream analyses. (NB: 
+in some settings `total_features` may also be considered a techinical variable, 
+but here it could reflect real biology, so we do not regress it out.) 
+
+The residuals of a linear regression are returned to `norm_exprs(object)`. Here,
+the `exprs` values in the `SCESet` are assumed to be on a log scale - if they 
+are not, then this regression approach may not work reliably. For similar 
+reasons, `norm_counts`, `norm_tpm`, `norm_cpm` and `norm_fpkm` values are not 
+affected by regressing out a set of explanatory variables. As using regression 
+residuals is unreliable for these strictly non-negative quantities, they are 
+only affected by size-factor normalisation.
+
+To regress out a set of explanatory variables, we simply need to supply a 
+"design matrix" to `normaliseExprs` that contains the matrix of values for the
+variables we wish to regress out. This is easy to construct in R with the 
+built-in `model.matrix` function. Here we regress out the four explanatory 
+variables listed above, combined with the same upper-quartile size-factor 
+normalisation as above. To retain all normalised expression values, here we save
+the normalised expression residuals to a new object (`norm_exprs_resid`) and 
+then add these values to a slot with the same name in the `SCESet` object:
+
+```{r regress-expl-vars, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+design <- model.matrix(~sce_zeisel_qc$log10_counts_endogenous_features +
+                           sce_zeisel_qc$pct_counts_top_100_features +
+                           sce_zeisel_qc$pct_counts_feature_controls)
+# sce_zeisel_qc <- normaliseExprs(sce_zeisel_qc, design = design,
+#                                 method = "upperquartile", 
+#                                 feature_set = endog_genes, p = 0.99)
+sce_zeisel_qc <- normaliseExprs(sce_zeisel_qc, design = design,
+                                method = "none", exprs_values = "exprs",
+                                feature_set = endog_genes, 
+                                return_norm_as_exprs = FALSE)
+set_exprs(sce_zeisel_qc, "norm_exprs_resid") <- norm_exprs(sce_zeisel_qc)
+smoothScatter(exprs(sce_zeisel_qc), get_exprs(sce_zeisel_qc,
+                                                   "norm_exprs_resid"),
+              xlab = "Size-factor normalised expression values",
+              ylab = "Size-factor normalised expression residuals")
+abline(0, 1, col = "firebrick", lty = 2)
+```
+
+As the smoothed scatter plot above shows, regressing out the explanatory 
+variables does alter expression levels quite substantially, because there are 
+several technical factors that have large effects on expression.
+
+As previously, we can investigate the affects of normalisation on large-scale 
+cell population structure.
+
+```{r pca-norm-plots-regress, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
+## subset again so that only endogenous genes are used
+plt_pca_endog_norm_resid <- plotPCA(
+    sce_zeisel_qc, exprs_values = "norm_exprs_resid", 
+    size_by = "total_features",  colour_by = "level1class", shape_by = "tissue") + 
+    ggtitle("PCA - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+#multiplot(plt_pca_endog_norm, plt_pca_endog_norm_resid, cols = 2)
+plt_pca_endog_norm_resid
+```
+
+Earlier PCA plots suggested that technical factors were strongly affecting the 
+PCA results. The plot above confirms this - when important technical variables 
+are regressed out, the cells of different level 1 clases group together more 
+closely when looking at the first two principal components.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=6, fig.align="center"}
+p1 <- plotQC(sce_zeisel_qc, type = "find-pcs", 
+             variable = "pct_counts_feature_controls", 
+             exprs_values = "norm_exprs_resid")
+p2 <- plotQC(sce_zeisel_qc, type = "find-pcs", variable = "level1class",
+             exprs_values = "norm_exprs_resid") +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
+plot_grid(p1, p2, ncol = 2, labels = letters[1:2])
+```
+
+The QC plot above shows that PCs no longer tag `total_features`, and that later
+PCs (2, 4, 5, 7) capture more signal for differences in cell type.
+
+```{r pca-norm-plots-regress-n7, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=12, fig.height=12}
+## subset again so that only endogenous genes are used
+plt_pca_endog_norm_resid_n7 <- plotPCA(
+    sce_zeisel_qc, exprs_values = "norm_exprs_resid", ncomponents = 7,
+    colour_by = "level1class", shape_by = "tissue") + 
+    ggtitle("PCA - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+#multiplot(plt_pca_endog_norm, plt_pca_endog_norm_resid, cols = 2)
+plt_pca_endog_norm_resid_n7
+```
+
+It is still eminently possible to distinguish between cell types, but with 
+strong technical effects (which here appear confounded with cell type to a 
+substantial extent) the later PCs are required to separate cell types with PCA.
+
+
+```{r tsne-norm-plots-regress, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=10}
+## subset again so that only endogenous genes are used
+plt_tsne_endog_norm_resid <- plotTSNE(
+    sce_zeisel_qc, exprs_values = "norm_exprs_resid", 
+    size_by = "total_features",  colour_by = "level1class", shape_by = "tissue",
+    random_seed = 20160203) + 
+    ggtitle("t-SNE - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+#multiplot(plt_tsne_endog_norm, plt_tsne_endog_norm_resid, cols = 2)
+plt_tsne_endog_norm_resid
+plt_tsne_endog_norm_resid2 <- plotTSNE(
+    sce_zeisel_qc, exprs_values = "norm_exprs_resid", 
+    size_by = "total_features",  colour_by = "level2class", shape_by = "tissue",
+    random_seed = 20160203) + 
+    ggtitle("t-SNE - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+plt_tsne_endog_norm_resid2
+```
+
+The user will need to make a decision for each dataset on the value of 
+regressing out explanatory variables for their analysis. The example here 
+highlights a tricky situation in which technical sources of variation seem to 
+be confounded with biology of interest to a substantial effect.
+
+NB: Users who prefer North American to British/Australian spelling can 
+*normalize* their data with `normalizeExprs()`, which is exactly the same as 
+`normaliseExprs()`.
+
+## Customised normalisation approaches
 
 "Customised" normalisation approaches can be easily incorporated into the 
 `scater` workflow, because it is very easy to add data to an `SCESet` obejct 
@@ -662,9 +835,6 @@ variables to define the colour and shape of the points.
 plotExpression(sce_zeisel_qc, rownames(de)[1:6], x = "level1class", ncol = 3,
                colour_by = "level1class") +
     theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
-plotExpression(sce_zeisel_qc, rownames(de)[1:6], x = "level1class", ncol = 3,
-               colour_by = "level1class", exprs_values = "norm_counts", log = TRUE) +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
 plotExpression(sce_zeisel_qc, tail(rownames(de), n = 6), exprs_values = "norm_exprs", 
                x = "level1class", colour_by = "level1class", 
                shape_by = "tissue", ncol = 3) +
@@ -682,7 +852,7 @@ distances can easily be used to produce multidimensional-scaling (MDS) plots to
 investigate the structure between cells.
 \  
 
-```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=8, fig.align="center", cache=TRUE}
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=8, fig.align="center"}
 
 cellDist(sce_zeisel_qc) <- (1 - cor(norm_exprs(sce_zeisel_qc), 
                                     method = "spearman")) / 2
@@ -691,15 +861,14 @@ plotMDS(sce_zeisel_qc, size_by = "total_features",  colour_by = "level1class",
         shape_by = "tissue") + 
     ggtitle("MDS plot based on spearman correlation")
 
-cellDist(sce_zeisel_qc) <- as.matrix(dist(t(counts(sce_zeisel_qc)), 
-                                          method = "canberra"))
-plotMDS(sce_zeisel_qc, size_by = "total_features",  colour_by = "level1class", 
-        shape_by = "tissue") + 
-    ggtitle("MDS plot based on spearman correlation")
 ```
 
 With the `plotMDS` function the user can apply their favourite way of defining
-the distance between cells to then plot the cells in a low-dimensional space.
+the distance between cells to then plot the cells in a low-dimensional space. 
+The plot above suggests that Spearman correlation is not the best distance 
+metric for single-cell RNA-seq data unless you are particularly interested in
+separating cells by total number of detected genes. Other metrics may work
+substantially better.
 
 Finally, let us save the QC'd version of the data that can be used for any 
 subsequent analyses.
