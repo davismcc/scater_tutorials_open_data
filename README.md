@@ -28,7 +28,7 @@ available.
 * For the mouse cortex data, see the
 [Linnarsson Lab website](http://linnarssonlab.org/cortex/).
 * For the mouse embryonic cell data, see the
-[Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016)
+[Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016).
 
 
 ## See for yourself
