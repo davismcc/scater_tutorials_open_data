@@ -1,17 +1,44 @@
 # `scater` tutorials with open-access data
 
-A set of tutorials using the [scater]() package to QC publicly available
-single-cell expression data sets
+This repository contains a set of tutorials using the
+[scater](http://bioconductor.org/packages/scater/) package to perform
+pre-processing, quality control normalisation and visualisation on several publicly available
+single-cell RNA-seq data sets.
 
-## See what it looks like
+RMarkdown (.Rmd) files are provided so that you can replicate the
+analyses and can be used as templates for analyses of your own
+data. HTML (.html) files are provided to show what the RMarkdown files
+produce when run, and also show demonstration workflows that could be followed.
 
-Check out the results of the analyses in these HTML reports produced
+Datasets used as examples here include:
+
+* 3000 mouse cortex cells from
+[Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138).
+* 1200 mouse embryonic cells from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html)
+
+More will follow. The analyses shown were carried out on a recent
+Macbook Pro laptop, so large computational resources are not required
+to analyse datasets of this scale.
+
+Kudos to the authors of these studies who have made their data
+available.
+
+* For the mouse cortex data, see the
+[Linnarsson Lab website](http://linnarssonlab.org/cortex/).
+* For the mouse embryonic cell data, see the
+[Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016)
+
+
+## See for yourself
+
+Check out the results of the `scater` analyses in these HTML reports produced
 with R Markdown showing code and results.
 
-* Analysis of a large mouse cortex dataset with `scater` can be seen
-  [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html). Kudos to the  [Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138), authors of that study, who  have made their data available at the
-  [Linnarsson Lab website](http://linnarssonlab.org/cortex/).
-* More to follow...
+* Zeisel et al mouse cortex cells analysis can be seen
+  [here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/zeisel_mouse_cortex.html).
+
+* Scialdone et al mouse embyonic cells anlaysis can be seen
+[here](https://rawgit.com/davismcc/scater_tutorials_open_data/master/scialdone_mouse_mesoderm.html).
 
 
 ## Do it yourself
@@ -33,20 +60,35 @@ page.
 To work through the tutorials you will need to have the following
 R/Bioconductor packages installed:
 * `scater`
+* `scran`
 * `data.table`
 * `cowplot`
 * `DT`
 * `knitr`
 
-See the [scater GitHub page](https://github.com/davismcc/scater) for
-installation instructions for that package. The rest can be installed
-with:
+**Install `scater`** from Bioconductor as below, or see the
+[scater GitHub page](https://github.com/davismcc/scater) for more
+installation instructions. It is recommended also to install `scran`
+for additional normalisation and other useful tools for single-cell
+data.
+
+```{r}
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("scater")
+biocLite("scran")
+```
+
+The rest can be installed with:
 ```{r}
 install.packages(c("data.table", "cowplot", "DT", "knitr"))
 ```
+
+Further packages may be needed for particular functionality in certain
+tutorials/workflows, with guidance provided in them as appropriate.
 
 Enjoy!
 
 ---
 
-Davis McCarthy, February 2016 - #researchparasites
+Davis McCarthy, August 2016 - #researchparasites

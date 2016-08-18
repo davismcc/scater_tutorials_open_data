@@ -1,0 +1,976 @@
+---
+title: "Pre-processing Data from Scialdone et al 2016"
+author: "Davis McCarthy"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        number_sections: true
+        code_folding: hide
+---
+
+# Investigating mouse mesoderm differentiation data
+
+This analysis requires `scater`, as well as the following CRAN packages:
+* `cowplot`
+* `DT`
+* `knitr`
+* `RBGL`
+* `dynamicTreeCut`
+* `RColorBrewer`
+* `gplots`
+and the following Bioconductor packages:
+* `scran`
+and the `dpt` package can be installed from Fabian Theis's webpage:
+```
+install.packages('devtools')
+setRepositories(ind = 1:2)
+devtools::install_url(paste0('https://www.helmholtz-muenchen.de/fileadmin/ICB/software/',
+                             c('destiny/destiny_1.3.4.tar.gz', 'dpt_0.6.0.tar.gz')))
+```
+
+We will demonstrate the pre-processing of the data from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html) with `scater` and `scran`, and explore the cells with visualisation tools in `scater` and with pseudotime estimation methods from `dpt`. 
+
+```{r load-libararies, message=FALSE, warning=FALSE}
+library(scater)
+library(ggplot2)
+library(cowplot)
+library(DT)
+library(knitr)
+library(scran)
+opts_chunk$set(cache = FALSE, warning = FALSE)
+```
+
+# Load the Scialdone et al mouse mesoderm data
+
+The mouse mesoderm data from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html) have been made available as gene-level counts at [Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016).
+
+Here we download the data directly from the Linnarrsson Lab page and produce an 
+`SCESet` object, which is the data structure used in the `scater` package.
+
+Here we first download the data (`counts.gz` and unzip to `counts.txt`) and the cell metadata (`metadata.txt`) to the directory containing this Rmd file and read in the data and metadata from those files.
+
+First load the data for metadata for mRNA genes:
+
+```{r load-metadata, cache=FALSE}
+## download mRNA data
+mrna_meta <- read.delim("metadata.txt", sep = " ")
+rownames(mrna_meta) <- mrna_meta$cellName
+datatable(mrna_meta[1:6,])
+```
+
+Now load the count data for the mRNA genes:
+
+```{r load-data-counts, cache=FALSE}
+## read in data
+mrna <- read.delim("counts.txt", sep = " ", nrows = 41389)
+datatable(mrna[1:20, 1:4])
+```
+
+Combine data and metadata to form an SCESet object:
+
+```{r make-sceset}
+## combine expression values
+pd <- new("AnnotatedDataFrame", mrna_meta)
+fd <- data.frame(ensembl_gene_id = rownames(mrna))
+rownames(fd) <- rownames(mrna)
+fd <- new("AnnotatedDataFrame", fd)
+sce_scialdone_raw <- newSCESet(countData = mrna, phenoData = pd, 
+                               featureData = fd)
+sce_scialdone_raw <- getBMFeatureAnnos(
+    sce_scialdone_raw, filters = "ensembl_gene_id",
+    attributes = c("ensembl_gene_id", "mgi_symbol",
+                   "chromosome_name", "gene_biotype"), 
+    feature_symbol = "mgi_symbol",
+    feature_id = "ensembl_gene_id", biomart = "ENSEMBL_MART_ENSEMBL",
+    dataset = "mmusculus_gene_ensembl", host = "www.ensembl.org")
+featureNames(sce_scialdone_raw) <- paste(
+    featureNames(sce_scialdone_raw), 
+    fData(sce_scialdone_raw)$mgi_symbol, sep = "_")
+sce_scialdone_raw
+```
+
+Now we have an `SCESet` object containing the expression data with cell and gene metadata combined. 
+
+This data were produced using read alignment with `GSNAP` and gene-level quantification with `HTSeq`, so `cpm` (counts-per-million) should be the correct units for analysis.
+
+# Calculate QC metrics
+
+Calculate QC metrics with `scater`'s `calculateQCMetrics` function. It is helpful to define "feature controls", that is features (here genes) that can be used for QC purposes. Typically, it is helpful to define ERCC spike-ins and mitochondrial genes as feature controls. However, the Scialdone data from the website have already been QC'd, so the 1205 cells for which we have data here are those that passed the QC filters described in the Scialdone et al (2016) paper. Here we show computing QC metrics with the mitochondrial genes identified as a set of control features (the ERCC spike-in gene expression values are not present):
+
+```{r calc-qc-metrics}
+mt_genes <- grep("mt-", fData(sce_scialdone_raw)$mgi_symbol)
+sce_scialdone_raw <- calculateQCMetrics(
+    sce_scialdone_raw, feature_controls = list(mt = mt_genes))
+```
+
+For this data set the original authors classified the cells into the broad cell
+categories shown in the output below, based on embryo stage and cell surface markers.
+
+```{r, echo=TRUE, eval=TRUE}
+sce_scialdone_raw$cellCategory <- factor(
+    sce_scialdone_raw$cellCategory, 
+    levels = c("E6.5", "PS-Flk1+", "NP-Flk1+", "NP-CD41+Flk1+", "NP-CD41+Flk1-",
+               "HF-Flk1+", "HF-CD41+Flk1+", "HF-CD41+Flk1-"))
+table(sce_scialdone_raw$cellCategory)
+```
+
+In the paper, they use t-SNE plots to visualize the population structure of the cells. We can replicate that with the default t-SNE plot easily with the `scater` function `plotTSNE`:
+
+```{r tsne-plot-raw}
+plotTSNE(sce_scialdone_raw, colour_by = "cellCategory")
+```
+
+By default, `plotTSNE` uses the 500 most variable genes in the dataset. In the plot above, we can easily distinguish the E6.5 cells from the others, just as Scialdone et al presented in their paper. 
+
+We will explore the cell types throughout the QC procedures described subsequently, and particularly as we subset the genes to those more relevant for the analysis we should see clearer structure in the cell populations.
+
+---
+
+# QC the genes
+
+
+Scater allows you to set minimum QC thresholds for a gene to be considered sufficiently expressed in your downstream analysis. Here,  we enforce that a gene must have least five counts in at least 45 cells (as this is the smallest group of cells as identified by Scialdone et al). The rationale behind this is that we would want to keep a gene if it was expressed in just one group of cells, but we don't want genes with very sparse expression overall.
+
+
+```{r, echo=TRUE, eval=TRUE}
+keep_gene <- rowMeans(counts(sce_scialdone_raw)) >= 1
+fData(sce_scialdone_raw)$use <- keep_gene 
+fData(sce_scialdone_raw)$use[mt_genes] <- FALSE
+```
+
+We retain `r sum(keep_gene)` genes for the analysis and drop `r sum(!keep_gene)` lowly-expressed genes from the analysis.
+
+It can be useful to plot gene expression frequency versus mean expression level to assess the effects of technical dropout in the dataset. We fit a non-linear least squares curve for the relationship between expression frequency and mean expression and use this to define the number of genes above high technical  dropout and the numbers of genes that are expressed (here defined as at least 1 count) in at least 50% and at least 25% of cells. A subset of genes to be  treated as feature controls can be specified, otherwise any feature controls  previously defined are used.
+  
+
+```{r, echo=TRUE, eval=TRUE, fig.width=7, fig.height=5, fig.align="center"}
+plotQC(sce_scialdone_raw, type = "exprs") 
+```
+
+The `plotQC()` function provides several useful  QC plots,  such as the 
+example below that considers the the number of reads consumed by the top 50 
+expressed genes. Aside from spike-ins, these are typically mitochondrial and 
+housekeeping genes. Here, as with most single-cell experiments,  a large 
+proportion of reads are being are taken up by uninteresting biology.  
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+plotQC(sce_scialdone_raw[fData(sce_scialdone_raw)$use, ], 
+       type = "highest-expression", col_by_variable = "cellCategory" )
+```
+
+As well as the expected mitochondrial genes among the most expressed, 
+we see *Actb*, involved in cell motility, structure and integrity.
+
+
+---
+
+# QC the cells
+
+A useful first step is flagging/failing poorly performing cells. This can be 
+done from the sample meta-data using the automated QC metrics generated above,  
+any additional sequencing metrics from sequencing aligner/mapping software,  
+and additional cell phenotypes such as from imaging. For the sake of 
+demonstration, here we focus on four metrics. Others you may want to consider 
+are % reads mapped to mitochondrial genes,  library PCR duplication rate,  
+and mean sequencing bias per cell.  
+
+```plotPhenoData()``` can be used to explore specific sample meta-data values. 
+For example, in the plots below we can see how different QC metrics distinguish 
+the cells.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.height=11, fig.width=12}
+p1 <- plotPhenoData(sce_scialdone_raw, aes_string(x = "log10_total_counts", 
+                                  y = "pct_counts_feature_controls_mt", 
+                                  colour = "cellCategory")) 
+p2 <- plotPhenoData(sce_scialdone_raw, aes_string(x = "total_features", 
+                                  y = "pct_counts_feature_controls_mt", 
+                                  colour = "cellCategory")) 
+plot_grid(p1, p2, labels = letters, nrow = 2)
+```
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.height=7, fig.width=8}
+plotPhenoData(sce_scialdone_raw, aes_string(x = "total_features", 
+                                  y = "pct_counts_feature_controls", 
+                                  colour = "filter_on_pct_counts_feature_controls",
+                                  shape_by = "filter_on_total_counts")) +
+    geom_vline(xintercept = 1000, linetype = 2)
+```
+
+Look at cumulative expression plot for these cells. Theis plot indicates that there are a few cells with low complexity libraries (e.g. top 100 genes accounting for more than 50% of counts) that could be filtered out.
+
+```{r cumulative-exprs-raw}
+plot(sce_scialdone_raw, exprs_values = "counts", block1 = "embryoStage",
+     colour = "cellCategory", ncol = 2)
+```
+
+
+Take a look at a PCA plot using QC metrics to see if any cells are flagged as outliers.
+
+```{r plot-pca-qc}
+sce_scialdone_raw <- plotPCA(sce_scialdone_raw, size_by = "total_features", 
+                             shape_by = "embryoStage", pca_data_input = "pdata",
+                             detect_outliers = TRUE, return_SCESet = TRUE)
+```
+
+This QC check flags `r sum(sce_scialdone_raw$outlier)` cells as outliers from the multivariate outlier detection in the PCA.
+
+In addition to outliers, we prefer to use cells that have a good coverage of 
+detected genes. After gene filtering, we demand that cells have detectable 
+expression for at least 30% of retained genes.
+
+```{r further-cell-filtering}
+keep_cell <- (
+    colSums(counts(sce_scialdone_raw)[fData(sce_scialdone_raw)$use,] > 5) > 
+        0.3 * sum(fData(sce_scialdone_raw)$use))
+sce_scialdone_raw$keep_cell_cov <- keep_cell
+```
+
+After this procedure we retain `r sum(sce_scialdone_raw$use)` cells and drop 
+68 cells.
+
+
+Use QC metrics to select a subset of cells for use.
+
+Now we will proceed to filtering out potentially problematic cells. We apply the following criteria for filtering:
+
+* total counts > 50,000
+* total features > 5,000
+* % dropout < 80%
+* % counts from MT genes < 20%
+* % counts from top 200 features < 60% 
+* cell not identified as outlier above.
+
+```{r filter-cells-scialdone}
+sce_scialdone_filt <- filter(sce_scialdone_raw, total_counts > 5e04, 
+                             pct_dropout < 80, !outlier, keep_cell_cov,
+                             pct_counts_feature_controls_mt < 20,
+                             pct_counts_top_100_features < 50, 
+                             total_features > 5000)
+sce_scialdone_raw$use <- (cellNames(sce_scialdone_raw) %in% 
+                              cellNames(sce_scialdone_filt))
+dim(sce_scialdone_filt)
+```
+
+This would lead us to drop a further `r sum(!sce_scialdone_raw$use)` cells from 
+this dataset.
+
+Box plots aren't particularly useful for visualising sparse data, so `plot()` applied to an SCESet object helps visualise all cells as a cumulative proportion of reads per cell. You can see from the plot below that all of the cells retained for analysis have relatively high-complexity libraries.
+
+All of the cells with lower-complexity libraries (plus others) have been filtered out by our QC approach here.
+
+```{r cum-exprs-plots-use, fig.height=9, fig.width=10, fig.align="center"}
+plot(sce_scialdone_raw, block1 = "embryoStage", colour_by = "use", 
+     exprs_values = "counts", ncol = 2)
+```
+
+The profiles for the remaining cells look very good.
+
+```{r cum-exprs-plots, fig.height=9, fig.width=10, fig.align="center"}
+plot(sce_scialdone_filt, exprs_values = "counts", block1 = "embryoStage",
+     colour = "cellCategory", ncol = 2)
+```
+
+The plots above show that some (but certainly not all) of the cells we have 
+opted not to use have a larger proportion of their library accounted for by a 
+handful of very highly-expressed genes.
+
+
+
+# Filter lowly-expressed genes
+
+We retain genes for analysis if they have average counts greater than 1. We will also recompute QC metrics after this filtering.
+
+```{r filter-genes}
+keep_gene <- (rowMeans(counts(sce_scialdone_filt)) >= 1)
+sce_scialdone_filt <- sce_scialdone_filt[keep_gene,]
+mt_genes <- grepl("^mt-", fData(sce_scialdone_filt)$mgi_symbol)
+sce_scialdone_filt <- calculateQCMetrics(
+    sce_scialdone_filt, feature_controls = list(MT = mt_genes))
+sce_scialdone_filt <- 
+    sce_scialdone_filt[!fData(sce_scialdone_filt)$is_feature_control,]
+```
+
+
+
+---
+
+# Investigate explanatory variables
+
+Once you have filtered cells and genes,  a next step is to explore technical drivers of variability in the data to inform data normalisation before downstream analysis. 
+
+Experimental design is a critical, but neglected, aspect of sc-RNA-seq studies. To the best of our knowledge, methods like those described in this section for exploring experimental and QC variables and the experimental design, do not feature in any scRNA-seq software packages apart from `scater`. There are a very large number of potential confounders, artifacts and biases in sc-RNA-seq studies. Exploring the effects of such explanatory variables (both those recorded during the experiment and computed QC metrics) is crucial for appropriate modeling of the data. The `scater` package provides a set of methods specifically for quality control of experimental and explanatory variables, 
+which will be demonstrated briefly here. 
+
+Using the `plotPCA()` function we can see that principal component one appears to be driven by differences in number of genes detected ("total features"). Differences in number of detected genes is a common driver of cell clustering  and can be result of biology (e.g. different cell types, cell cycle). Indeed, in the PCA here we see that the endothelial-mural and astrocyte-ependymal cells have typically many fewer features than the other cell types. 
+
+However, number of genes detected often has a strong technical component due to variably recovered RNA, reverse transcription, or library amplification. Its effect can also be notably non-linear,  affecting low expressed and high expressed genes differently. The `plotQC()` function can be used to explore the the marginal % variance explained (per gene) of the various technical factors. In the second plot we can see that it's not unusual for gene coverage to explain more than 10% of the expression variance of a gene. 
+
+```{r pca-diffmap-normalisation, echo=T, eval=T, message=F, warning=F, fig.width=7, fig.height=5, fig.align="center"}
+# we can easily subset to only plot genes and cells of interest
+plotPCA(sce_scialdone_filt, colour_by = "cellCategory", 
+        size_by = "total_features" )
+```
+
+One can also easily produce plots to identify principal components that correlate with experimental and QC variables of interest. The function `plotQC` with the option `type = "find-pcs"` ranks the principal components in decreasing order of R-squared from a linear model regressing PC value against the variable of interest. The default behaviour is to show the relationships between the variable of interest and the six principal components with the strongest relationship to the variable (as measured by R-squared). This works both for continous and categorical variables. This type of plot  can indicate which explanatory variables may be driving differences between cells as detected by PCA and highlight which PCs are associated with the variable. The "total features" variable shows very strong correlation with both principal components 1 and 2.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=6, fig.align="center"}
+p1 <- plotQC(sce_scialdone_filt, type = "find-pcs", variable = "total_features")
+p2 <- plotQC(sce_scialdone_filt, type = "find-pcs", variable = "cellCategory" ) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
+plot_grid(p1, p2, ncol = 2, labels = letters)
+```
+
+Very clearly, the first and second principal components here are driven by the different cell types, while total features is most strongly correlated with just the seventh principal component. As we would hope after rigorous QC, biological signal overwhelms technical effects. 
+
+The relative importance of different explanatory variables can be explored with some of the `plotQC` function options. Supplying the `type = "expl"` argument to `plotQC` computes the marginal R-squared for each variable in the \textsf{SCESet} when fitting a linear model regressing expression values for 
+each gene against just that variable, and displays a density plot of the gene-wise marginal R-squared values for the variables. The default approach looks at all variables in the \textsf{phenoData} slot of the object and plots the top `nvars_to_plot` variables (default is 10). 
+
+Alternatively, one can choose a subset of variables to plot in this manner, which we do here. The density curves for marginal R-squared show the relative importance of different variables for explaining variance in expression between cells. In the plot we can see that it's not unusual for gene coverage to explain more than 10% of the expression variance of a gene. 
+
+```{r plotqc-expl-vars, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=4.5, fig.align="center"}
+plotQC(sce_scialdone_filt, type = "explanatory-variables", 
+        variables = c("pct_counts_top_100_features", "total_features", 
+                      "pct_counts_feature_controls", "cellCategory", 
+                      "embryoStage", "embryo",
+                      "n_detected_feature_controls", 
+                      "log10_counts_endogenous_features",
+                      "log10_counts_feature_controls") )
+```
+
+
+This analysis indicates that the biological factors `embryo`, `cellCategory` and `embryoStage` have the most substantial (marginal) explanatory power for many genes. The technical effects have less substantial effects, with the strongest being `total_features` (number of expression genes). We may wish to regress out some of the technical effects as part of a normalization step, but it may not be vital for these data, where the biological signal is very strong.
+
+The `plotQC()` function can also be used to produce a pairs plot of explanatory variables (with the same calls as above, but with `method = "pairs"`). The plot below shows this use case for looking at the % counts from the top 100 most-expressed genes, the total number of expressed genes, the % of counts from feature controls, the number of detected feature controls, the number of counts (on the log-10 scale) from endogenous features, the number of counts (log-10 scale) from feature controls and sample type. The explanatory variables are ordered by the median R-squared of the variable across all genes, and this value is reported on the plot. This type of plot is also useful for finding correlations between experimental and QC variables with substantial explanatory power.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=8, fig.height=8, fig.align="center"}
+plotQC(sce_scialdone_filt, 
+        type = "expl", method = "pairs", 
+        variables = c("pct_counts_top_100_features", "total_features", 
+                      "pct_counts_feature_controls", "embryo", "embryoStage",
+                      "n_detected_feature_controls", 
+                      "log10_counts_endogenous_features",
+                      "log10_counts_feature_controls", "cellCategory"),
+        theme_size = 6)
+
+```
+\  
+
+The plot above shows that the variables `embryo`, `embryoStage` and `cellCategory` are strongly correlated (for obvious reasons). We can see that variables like `log10_counts_feature_controls` and `pct_counts_features_controls` are correlated. Here, the correlated variables are expected, but this plot can be very useful for uncovering variables with substantial explanatory power that may not be obviously correlated.
+
+
+---
+
+# Normalise the data
+
+After important explanatory variables have been identified with the tools shown 
+above, their effects can be accounted for in subsequent statistical models, or 
+they can be conditioned out using `normaliseExprs()`, if so desired. If a design
+matrix incorporating a selection of explanatory variables is supplied as an 
+argument to `normaliseExprs`, then normalised expression values returned for 
+each feature will be the residuals from a linear model fitted with the design 
+matrix, after any size-factor normalisation has been applied to the expression 
+data. 
+
+Normalising single-cell RNA-seq data is a topic in its infancy, but many of the 
+basic principles still apply. How much you choose to initially correct for 
+technical factors depends on your question of interest and the ease with which 
+they can be accounted for in downstream models.
+
+## Size-factor normalisation
+
+In `scater` it is easy to perform size-factor normalisation using the recent method from, [Lun et al (2016)](http://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0947-7). Their size-factor normalisation method is specifically designed for scRNA-seq data and method performs much better on single-cell data. Its implementation in the Bioconductor package `scran` allows seamless integration into the `scater` workflow. (The `scran` package itself depends on `scater`).
+
+We recommend using the `scran` size-factor normalisation approach and 
+demonstrate its use here.
+
+The code below demonstrates how to carry out size-factor normalisation on a 
+subsetted SCESet object, normalising either to ERCC spike-in genes (not shown) 
+or to endogenous genes. Under certain circumstances either may be appropriate. 
+
+We do not have ERCC spikes in this dataset, so we cannot use the spike normalisation methods in `scran`.
+
+```{r sizefactor-normalisation, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+## size factor normalisation with scran 
+qclust <- quickCluster(sce_scialdone_filt)
+sce_scialdone_qc <- computeSumFactors(sce_scialdone_filt, clusters = qclust)
+summary(sce_scialdone_qc$size_factor)
+sce_scialdone_qc <- normalise(sce_scialdone_qc)
+```
+
+Here normalisation using size factors using the `computeSumFactors` function from the `scran` package is undertaken. The `quickCluster` method from `scran` was used to obtain a rough clustering of cells to guide the size-factor computation step.
+
+Looking at a t-SNE plot using the normalised data yields perhaps slightly more distinct cell-type clusters, although the effect here is subtle.
+
+```{r tsne-norm-plots, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=9, fig.height=6}
+plotTSNE(sce_scialdone_qc, exprs_values = "exprs", ntop = 1000,  
+         colour_by = "cellCategory", shape_by = "embryoStage",
+         random_seed = 20160203) + 
+    ggtitle("t-SNE - endogenous size-factor normalisation")
+```
+
+
+## Classification of cell cycle phase
+
+We use the prediction method described by Scialdone et al. (2015) to classify cells into cell cycle phases based on the gene expression data. Using a training data set, the sign of the difference in expression between two genes was computed for each pair of genes. Pairs with changes in the sign across cell cycle phases were chosen as markers. Cells in a test data set can then be classified into the appropriate phase, based on whether the observed sign for each marker pair is consistent with one phase or another. This approach is implemented in the cyclone function using a pre-trained set of marker pairs for human data.
+
+```{r cell-cycle-cyclone}
+mm.pairs <- readRDS(system.file("exdata", "mouse_cycle_markers.rds",
+                                package = "scran"))
+# library(org.Mm.eg.db)
+# anno <- select(org.Mm.eg.db, keys = fData(sce_scialdone_qc)$mgi_symbol, 
+#                keytype = "SYMBOL", column = "ENSEMBL")
+# ensembl <- anno$ENSEMBL[match(fData(sce_scialdone_qc)$mgi_symbol, anno$SYMBOL)]
+register(SerialParam())
+assignments <- cyclone(sce_scialdone_qc, mm.pairs, 
+                       gene.names = fData(sce_scialdone_qc)$ensembl_gene_id)
+sce_scialdone_qc$G1_score <- assignments$score$G1
+sce_scialdone_qc$G2M_score <- assignments$score$G2M
+sce_scialdone_qc$cell_cycle_phase <- assignments$phases
+plotPhenoData(sce_scialdone_qc, aes(G1_score, G2M_score))
+ggplot(pData(sce_scialdone_qc), aes(G1_score, G2M_score)) + geom_hex()
+```
+
+The cell cycle phase inference from cyclone looks reasonable here as we see most cells getting either a very low G1 score or a very low G2/M score (or both), which means that all of the cells can be assigned to a cell cycle phase with high confidence.
+
+
+## Regressing out explanatory variables
+
+In the section above we used the `plotQC()` function to identify the following technical variables that (marginally) explained a moderate but appreciable proportion of the variance for many genes:
+* `log10_counts_endogenous_features`
+* `pct_counts_top_100_features`
+* `pct_counts_feature_controls`.
+The `normaliseExprs()` function enables such explanatory variables to be regressed out of the expression values for downstream analyses. (NB: in some settings `total_features` may also be considered a techinical variable, but here it could reflect real biology, so we do not regress it out.) 
+
+The residuals of a linear regression are returned to `norm_exprs(object)`. Here, the `exprs` values in the `SCESet` are assumed to be on a log scale - if they are not, then this regression approach may not work reliably. For similar reasons, `norm_counts`, `norm_tpm`, `norm_cpm` and `norm_fpkm` values are not affected by regressing out a set of explanatory variables. As using regression residuals is unreliable for these strictly non-negative quantities, they are only affected by size-factor normalisation.
+
+To regress out a set of explanatory variables, we simply need to supply a "design matrix" to `normaliseExprs` that contains the matrix of values for the variables we wish to regress out. This is easy to construct in R with the built-in `model.matrix` function. Here we regress out the G1 and G2M scores computed with `cyclone` above and then save the normalised expression residuals to a new slot (`norm_exprs_resid`) in the `SCESet` object:
+
+```{r regress-expl-vars, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+design <- model.matrix(~sce_scialdone_qc$G1_score +
+                           sce_scialdone_qc$G2M_score)
+
+sce_scialdone_qc <- normaliseExprs(sce_scialdone_qc, design = design,
+                                method = "none", exprs_values = "exprs",
+                                return_norm_as_exprs = FALSE)
+set_exprs(sce_scialdone_qc, "norm_exprs_resid") <- norm_exprs(sce_scialdone_qc)
+smoothScatter(exprs(sce_scialdone_qc), get_exprs(sce_scialdone_qc,
+                                                   "norm_exprs_resid"),
+              xlab = "Size-factor normalised expression values",
+              ylab = "Size-factor normalised expression residuals")
+abline(0, 1, col = "firebrick", lty = 2)
+```
+
+As the smoothed scatter plot above shows, regressing out the cell cycle scores does alter expression levels quite substantially.
+
+We can investigate the effects of using normalisation residuals as opposed to just size-factor normalisation on large-scale cell population structure using PCA.
+
+```{r pca-norm-plots-regress, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
+## subset again so that only endogenous genes are used
+p1 <- plotPCA(sce_scialdone_qc, exprs_values = "exprs", 
+              colour_by = "cellCategory", shape_by = "embryoStage") + 
+    ggtitle("PCA - endogenous size-factor normalisation") + 
+    theme(legend.position = "bottom")
+p2 <- plotPCA(sce_scialdone_qc, exprs_values = "norm_exprs_resid", 
+    colour_by = "cellCategory", shape_by = "embryoStage") + 
+    ggtitle("PCA - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+plot_grid(p1, p2, labels = letters)
+```
+
+Thus, regressing out these technical factors brings the cells closer together in PCA-space.
+
+```{r tsne-norm-plots-regress, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
+## subset again so that only endogenous genes are used
+p1 <- plotTSNE(sce_scialdone_qc, exprs_values = "exprs", ntop = 1000,
+              colour_by = "cellCategory", shape_by = "embryoStage",
+              rand_seed = 20160727) + 
+    ggtitle("tSNE - endogenous size-factor normalisation") + 
+    theme(legend.position = "bottom")
+p2 <- plotTSNE(sce_scialdone_qc, exprs_values = "norm_exprs_resid", 
+    colour_by = "cellCategory", shape_by = "embryoStage", ntop = 1000,
+    rand_seed = 20160727) + 
+    ggtitle("tSNE - endogenous size-factor normalisation residuals") + 
+    theme(legend.position = "bottom")
+plot_grid(p1, p2, labels = letters)
+```
+
+The t-SNE plots are not drastically affected by using residuals compared with size-factor normalised expression values. This is encouraging, as it suggests that the cell-type differences in expression profiles are much stronger than differences between cells due to nuisance effects like the cell cycle.
+
+The QC plot below shows that PCs no longer tag `cell_cycle_phase`, but that PCs 1-5 are still strongly explained by `cellCategory`.
+
+```{r, echo=T, eval=T, message=F, warning=F, fig.width=10, fig.height=6, fig.align="center"}
+p1 <- plotQC(sce_scialdone_qc, type = "find-pcs", 
+             variable = "cell_cycle_phase", 
+             exprs_values = "norm_exprs_resid")
+p2 <- plotQC(sce_scialdone_qc, type = "find-pcs", variable = "cellCategory",
+             exprs_values = "norm_exprs_resid") +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
+plot_grid(p1, p2, ncol = 2, labels = letters[1:2])
+```
+
+The user will need to make a decision for each dataset on the value of regressing out explanatory variables for their analysis. In the example here, regressing out cell cycle effects does not have a drastic impact, because the biological signal (differences between cell types) in the data is already the main source of variation between cells. Going forward, we will use the expression residuals, just to minimise any effects of cell cycle.
+
+```{r use-norm-resids-as-exprs}
+#exprs(sce_scialdone_qc) <- get_exprs(sce_scialdone_qc, "norm_exprs_resid")
+```
+
+NB: Users who prefer North American to British/Australian spelling can *normalize* their data with `normalizeExprs()`, which is exactly the same as `normaliseExprs()`.
+
+
+# Identify HVGs from the normalized log-expression
+
+We use methods from the `scran` package to identify highly variable genes (HVGs) from the normalized log-expression. This approach decomposes the biological and technical components of the variance by fitting a mean-variance trend to the endogenous genes, and using spike-in genes as diagnostic (due to their small number they are not used for fitting the trend). 
+
+The top HVGs are identified by ranking genes on their biological components. This can be used to prioritize genes for further investigation. In general, we consider a gene to be a HVG if it has a biological component of at least 1. For transformed expression values on the log2 scale, this means that gene expression will vary by at least 2-fold around the mean due to biological effects.
+
+It is recommended to check the distribution of expression values for the top HVGs to ensure that the variance estimate is not dominated by one or two outlier cells. 
+
+We estimate highly-variable genes from expression values before regressing out the cell cycle scores (otherwise the distributional assumptions go awry for the variance).
+
+```{r identify-hvgs}
+var.fit <- trendVar(sce_scialdone_qc, trend = "loess", use.spikes = FALSE,
+                    span = 0.2)
+var.out <- decomposeVar(sce_scialdone_qc, var.fit)
+
+plot(var.out$mean, var.out$total, pch = 16, cex = 0.6, 
+     xlab = "Mean log-expression", ylab = "Variance of log-expression")
+o <- order(var.out$mean)
+lines(var.out$mean[o], var.out$tech[o], col = "dodgerblue", lwd = 2)
+
+top.hvgs <- order(var.out$bio, decreasing = TRUE)
+write.table(file = "scialdone_hvg.tsv", var.out[top.hvgs,], sep = "\t", 
+            quote = FALSE, col.names = NA)
+head(var.out[top.hvgs,])
+
+examined <- top.hvgs[1:10]
+all.names <- matrix(rownames(sce_scialdone_qc)[examined], 
+                    nrow = length(examined), ncol = ncol(sce_scialdone_qc))
+plotExpression(sce_scialdone_qc, examined, show_median = TRUE)
+table(var.out$bio > var.out$tech)
+table(var.out$bio > 1)
+n_hvgs <- sum(var.out$bio > 1)
+```
+
+There are `r sum(var.out$bio > 1)` genes with a biological component of the variance greater than 1. We will consider these to be the highly variable genes.
+
+
+# Identifying correlated gene pairs with Spearman's rho
+
+Another useful procedure is to identify the HVGs that are highly correlated with one another. This distinguishes between HVGs caused by random noise and those involved in driving systematic differences between subpopulations. Gene pairs with significantly large positive or negative values for Spearman’s rho are identified using the correlatePairs function. Note that we only apply this function for the top set of HVGs – doing so for all possible gene pairs would require too much computational time and may prioritize uninteresting genes that have strong correlations but low variance, e.g., tightly co-regulated house-keeping genes.
+
+For this analysis we will use the normalised expression residuals as expression values.
+
+```{r correlated-gene-pairs}
+set.seed(100)
+var.cor <- correlatePairs(get_exprs(sce_scialdone_qc, "norm_exprs_resid"),
+                          subset.row = top.hvgs[1:n_hvgs])
+write.table(file = "scialdone_cor.tsv", var.cor, sep = "\t", 
+            quote = FALSE, row.names = FALSE)
+head(var.cor)
+
+sig.cor <- var.cor$FDR <= 0.05
+summary(sig.cor)
+
+```
+
+Larger sets of correlated genes can be assembled by treating genes as nodes in a graph and each pair of genes with significantly large correlations as an edge. In this manner, an undirected graph can be constructed using methods in the RBGL package. Highly connected subgraphs can then be identified and defined as gene sets. This provides a convenient summary of the pairwise correlations between genes.
+
+
+```{r graph-structure-with-rbgl}
+library(RBGL)
+g <- ftM2graphNEL(cbind(var.cor$gene1, var.cor$gene2)[sig.cor,], 
+                  W = NULL, V = NULL, edgemode = "undirected")
+# cl <- highlyConnSG(g)$clusters
+# cl <- cl[order(lengths(cl), decreasing = TRUE)]
+# cl <- cl[lengths(cl) > 2]
+# length(cl)
+```
+
+Here we obtain just one large cluster, however.
+
+Significant correlations provide evidence for substructure in the data set, i.e., subpopulations of cells with systematic differences in their expression profiles. The number of significantly correlated HVG pairs represents the strength of the substructure. If many pairs were significant, this would indicate that the subpopulations were clearly defined and distinct from one another. 
+
+The correlation results can also be used directly in follow-up experiments to verify if any substructure is present. This is done by using sets of correlated HVGs as markers in procedures such as fluorescence-activated cell sorting, immunohistochemistry or RNA flourescence in situ hybridization. In this manner, the existence of subpopulations with distinct expression patterns for the chosen HVGs can be experimentally validated. Negatively correlated pairs may be particularly useful as they provide more power to discriminate between subpopulations. In the simplest example, a subpopulation would be positive for one marker and negative for the other while the reverse would be true for a different subpopulation, thus allowing the two subpopulations to be easily distinguished.
+
+# Using correlated HVGs for further data exploration
+
+For further analyses, we focus on the significantly correlated HVGs for which any substructure should be most pronounced. This may allow us to identify subpopulations that would have otherwise been masked by random noise in the expression profiles. (Even greater resolution can be achieved by looking at one or more subsets of correlated HVGs, identified above as the highly connected subgraphs. This focuses on specific aspects of biology that might have been otherwise masked by stronger effects in the data, e.g., metabolic state being masked by cell type. However, this requires some pre-existing knowledge to determine which genes are relevant and which subsets should be used.)
+
+```{r choosing-hvgs}
+chosen <- unique(c(var.cor$gene1[sig.cor], var.cor$gene2[sig.cor]))
+norm.exprs <- get_exprs(sce_scialdone_qc, "norm_exprs_resid")[chosen,, drop = FALSE]
+```
+
+
+We construct a simple dendrogram to group together cells with similar expression patterns across the chosen genes. Here, we cluster on Euclidean distances to provide greater sensitivity to differences in expression for low numbers of genes. Ward’s clustering criterion is used to minimize the total variance within each cluster.
+
+```{r calc-dist, message = FALSE, results='hide'}
+library(igraph)
+## dist from rho
+gg <- graph_from_data_frame(var.cor, directed = FALSE)
+corr_mat <- get.adjacency(gg, attr = "rho")
+rho_dist <- as.dist((1 - corr_mat) / 2)
+rho_tree <- hclust(rho_dist, method = "ward.D2")
+
+## euclidean dist
+cellDist(sce_scialdone_qc) <- dist(t(norm.exprs))
+my.tree <- hclust(cellDist(sce_scialdone_qc), method = "ward.D2")
+```
+
+In addition, a tree cut can be used to explicitly define subpopulations of cells from the dendrogram. Note that some tuning of the cut height h is required to obtain satisfactory results for each data set.
+
+```{r cut-clusters-genes}
+library(dynamicTreeCut)
+library(RColorBrewer)
+library(gplots)
+## cluster genes
+rho.clusters <- unname(cutreeDynamic(rho_tree, distM = as.matrix(rho_dist), 
+                                    verbose = 0))
+heat.vals <- t(norm.exprs) - colMeans(norm.exprs)
+clust.col <- brewer.pal(max(rho.clusters), "Set3")
+heatmap.2(heat.vals, col = bluered, symbreak = TRUE, trace = 'none', 
+          cexRow = 0.3, ColSideColors = clust.col[rho.clusters],
+          Colv = as.dendrogram(rho_tree))
+
+pdf("scialdone_heat_genes.pdf", width = 30, height = 30)
+heatmap.2(heat.vals, col = bluered, symbreak = TRUE, trace = 'none', 
+          cexRow = 0.3, ColSideColors = clust.col[rho.clusters],
+          Colv = as.dendrogram(rho_tree))
+dev.off()
+
+```
+
+We can visualize the constructed dendrogram with a heatmap. All expression values are mean-centred for each gene to highlight the relative expression between cells. We recommend storing the heatmap at a sufficiently high resolution so that the relevant genes can be easily identified for further examination.
+
+```{r heatmap-cells}
+## cluster cells - euclidean dist
+my.clusters <- unname(cutreeDynamic(my.tree, 
+                                    distM = as.matrix(cellDist(sce_scialdone_qc)),
+                                    verbose = 0))
+heat.vals <- norm.exprs - rowMeans(norm.exprs)
+clust.col <- brewer.pal(max(my.clusters), "Set3")
+heatmap.2(heat.vals, col = bluered, symbreak = TRUE, trace = 'none', 
+          cexRow = 0.3, ColSideColors = clust.col[my.clusters],
+          Colv = as.dendrogram(my.tree))
+
+pdf("scialdone_heat_cells.pdf", width = 20, height = 40)
+heatmap.2(heat.vals, col = bluered, symbreak = TRUE, trace = 'none', 
+          cexRow = 0.3, ColSideColors = clust.col[my.clusters], 
+          Colv = as.dendrogram(my.tree))
+dev.off()
+
+sce_scialdone_qc$hier_cluster <- my.clusters
+sce_scialdone_qc$original_cluster <- as.integer(sce_scialdone_qc$cluster)
+```
+
+Finally, dimensionality reduction can be applied using only the set of correlated HVGs to highlight any substructure that might be present. This is shown in Figure 12 for both PCA and t-SNE plots, though in this case, focusing on HVGs does not provide any additional separation into distinct subpopulations. A more informative strategy is to colour cells in the plot based on the expression of a gene of interest. This improves visualization by highlighting changes in expression across the cell population.
+
+```{r red-dim-hvgs}
+out.pca <- plotPCA(sce_scialdone_qc, exprs_values="norm_exprs_resid", 
+                   feature_set = chosen, colour_by = "ENSMUSG00000031162_Gata1") +
+    theme(legend.position = "bottom")
+out.tsne <- plotTSNE(sce_scialdone_qc, exprs_values = "norm_exprs_resid", 
+                     feature_set = chosen, rand_seed = 100,
+                     colour_by = "ENSMUSG00000031162_Gata1") +
+        theme(legend.position = "bottom")
+plot_grid(out.pca, out.tsne, labels = letters)
+```
+
+We can also compare the cluster of cells defined by the authors of the original study and the hierarchical clustering approach defined above. Both the authors' original cluster and the hierarchical clustering we have applied neatly delineates identifiable clusters in the t-SNE plot. 
+
+There is a large degree of agreement between the two clusterings. Original cluster 10 and our cluster 1 coincide perfectly. Original clusters 7 and 8 make up our cluster 6. Original cluster 3 is very close to our cluster 2. There are more original clusters than there are in our hierarchical clustering, but the remaining clusters nevertheless show a large degree of overlap. 
+
+```{r tsne-hvgs-compare-clust, fig.width=10}
+sce_scialdone_qc <- plotTSNE(sce_scialdone_qc, exprs_values = "norm_exprs_resid", 
+              feature_set = chosen,  rand_seed = 100, perplexity = 150,
+              return_SCESet = TRUE, draw_plot = FALSE)
+p1 <- plotReducedDim(sce_scialdone_qc, colour_by = "original_cluster") +
+    theme(legend.position = "bottom")
+p2 <- plotReducedDim(sce_scialdone_qc, colour_by = "hier_cluster") +
+        theme(legend.position = "bottom")
+plot_grid(p1, p2, labels = letters)
+```
+
+Showing the "cellCategory" variable (from known embryo stage and FACS marker results), shows that our cluster 1 almost perfectly captures the E6.5 cells. Furthermore, we observe high expression of *Pou5f1* (*Oct4*) in this cluster, and low expression in the other cells.
+
+
+```{r tsne-hvgs-compare-clust-2, fig.width=10}
+p3 <- plotReducedDim(sce_scialdone_qc, colour_by = "cellCategory") +
+        theme(legend.position = "bottom")
+p4 <- plotReducedDim(sce_scialdone_qc, colour_by = "ENSMUSG00000024406_Pou5f1") +
+        theme(legend.position = "bottom")
+plot_grid(p3, p4, labels = letters)
+```
+
+
+---
+
+# Data visualization
+
+Scater allows users total flexibility to run their favourite dimension reduction methods, as demonstrated to some extect above and decribed in the supporting help files. Previously we have used `plotPCA()` to explore the cell population. The t-SNE plot works particularly nicely for this dataset to separate the different cell types as identified by Scialdone et al, as seen above.
+
+With `scater`, any specific set of features based on prior knowledge can be used for PCA, t-SNE or diffusion maps. A feature set to use can be defined by supplying the `feature_set` argument to `plotPCA`, `plotTSNE` or `plotDiffusionMap`. This allows, for example, using only housekeeping features or control features or cell cycle genes or highly-variable genes (as we have done here) to produce reduced-dimension plots.
+
+Since this study looks at differentiating cells, using a diffusion map (better suited to cells distributed along a process) is also a natural choice for visualising the cells. Here, the diffusion map looks similar to PCA, but with the E6.5 cells more tightly grouped.
+
+```{r diff-map-plot, fig.width=10}
+sce_scialdone_qc <- plotDiffusionMap(sce_scialdone_qc, return_SCESet = TRUE,
+                                     feature_set = chosen, rand_seed = 100, 
+                                     draw_plot = FALSE)
+p1 <- plotReducedDim(sce_scialdone_qc, colour_by = "cellCategory") +
+    theme(legend.position = "bottom")
+p2 <- plotReducedDim(sce_scialdone_qc, colour_by = "hier_cluster") +
+    theme(legend.position = "bottom")
+plot_grid(p1, p2, labels = letters)
+```
+
+The two-dimensional arc of cells in the diffusion map suggests a continuous process of differentiation undergone by the cells. Also, we can store the diffusion map coordinates in the `reducedDimension` slot of the SCESet object so that we do not need to recompute the diffusion map each time we want to produce a variation on the plot.
+
+A neat feature of the dimension-reduction plots in `scater` is that we can easily colour plotted points by the expression values of a gene of interest. Here, we reproduce the diffusion map plots above showing the expression of the differentiation marker genes *Nanog*, *Pou5f1* (*Oct4*) and *Gata1*. 
+
+```{r diff-map-plot2, fig.width=10}
+p1 <- plotReducedDim(sce_scialdone_qc, colour_by = "ENSMUSG00000012396_Nanog") +
+        theme(legend.position = "bottom", legend.text = element_text(size = 8))
+p2 <- plotReducedDim(sce_scialdone_qc, colour_by = "ENSMUSG00000024406_Pou5f1") +
+    theme(legend.position = "bottom", legend.text = element_text(size = 8))
+p3 <- plotReducedDim(sce_scialdone_qc, colour_by = "ENSMUSG00000031162_Gata1") +
+        theme(legend.position = "bottom", legend.text = element_text(size = 8))
+plot_grid(p1, p2, p3, labels = letters, ncol = 3)
+```
+
+We see that *Pou5f1* and *Nanog* are highly expressed in the E6.5 cells and decrease in expression across the other clusters. *Nanog* is almost exclusibely expressed in the E6.5 cells. Conversely, *Gata1* is highly expressed in the cells in the bottom right corner of the diffusion map plot, suggested this is the "end" of a differentiation process that the diffusion map appears to tease out.
+
+With the `plotMDS` function the user can apply their favourite way of defining the distance between cells to then plot the cells in a low-dimensional space. The plot below suggests that Spearman correlation works reasonably well for this dataset. Other metrics may work substantially better here and in other contexts.
+
+```{r mds-norm-plots-regress-podxl, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=5.5}
+p1 <- plotMDS(sce_scialdone_qc, colour_by = "cellCategory") +
+            theme(legend.position = "bottom")
+p2 <- plotMDS(sce_scialdone_qc, colour_by = "ENSMUSG00000024406_Pou5f1") +
+            theme(legend.position = "bottom")
+plot_grid(p1, p2, labels = letters, ncol = 2)
+```
+
+
+In `scater` the `plotExpression` function enables the convenient visualisation 
+of expression values for a set of features. Here, the expression values for the 
+six most DE genes for expression frequency between cell types are shown. The 
+units for expression in the plot can be defined with the `exprs_values` argument
+(the expression values must exist with the provided name in the `assayData` 
+slot of the SCESet object; if not the default `exprs` values will be used, 
+with a warning). As with other plots in `scater` we can use phenotype data 
+variables to define the colour and shape of the points.
+
+Here we take a set of genes presented in the Scialdone et al (2016) paper as relevant for their analysis and explore their behaviour some more with `scater` tools.
+
+As the plot below shows, *Podxl*, *Pou5f1*, and *Smtnl2* are expressed in most cells, whereas the other genes here are only expressed at reasonable levels in a small subset of cells.
+
+```{r plot-exprs-feats, cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=8, fig.height=5}
+feats <- c("ENSMUSG00000024406_Pou5f1", "ENSMUSG00000012396_Nanog",
+           "ENSMUSG00000031162_Gata1", "ENSMUSG00000052217_Hbb-bh1",
+           "ENSMUSG00000063060_Sox7", "ENSMUSG00000058794_Nfe2",
+           "ENSMUSG00000066652_Lefty2", "ENSMUSG00000030699_Tbx6",
+           "ENSMUSG00000021835_Bmp4", "ENSMUSG00000025608_Podxl",
+           "ENSMUSG00000045382_Cxcr4", "ENSMUSG00000034664_Itga2b",
+           "ENSMUSG00000006362_Cbfa2t3", "ENSMUSG00000024986_Hhex",
+           "ENSMUSG00000038700_Hoxb5", "ENSMUSG00000042286_Stab1",
+           "ENSMUSG00000045667_Smtnl2", "ENSMUSG00000041361_Myzap")
+feats <- feats[order(fData(sce_scialdone_qc)[feats, "mgi_symbol"])]
+plotExpression(sce_scialdone_qc, feats)
+pluri_feats <- c("ENSMUSG00000024406_Pou5f1", "ENSMUSG00000012396_Nanog",
+                 "ENSMUSG00000025608_Podxl")
+mid_feats <- c("ENSMUSG00000021835_Bmp4", "ENSMUSG00000045382_Cxcr4",
+                "ENSMUSG00000024986_Hhex", "ENSMUSG00000038700_Hoxb5",
+                "ENSMUSG00000066652_Lefty2",  "ENSMUSG00000041361_Myzap",
+               "ENSMUSG00000045667_Smtnl2", "ENSMUSG00000030699_Tbx6",
+               "ENSMUSG00000042286_Stab1")
+later_feats <- c( "ENSMUSG00000006362_Cbfa2t3", "ENSMUSG00000031162_Gata1",
+                  "ENSMUSG00000052217_Hbb-bh1", "ENSMUSG00000034664_Itga2b",
+                  "ENSMUSG00000058794_Nfe2", "ENSMUSG00000063060_Sox7")
+```
+
+```{r plot-exprs-feat-subsets, cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=10, fig.height=5}
+sce_scialdone_qc$hier_cluster <- as.factor(sce_scialdone_qc$hier_cluster)
+plotExpression(sce_scialdone_qc, pluri_feats, x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) + 
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    ggtitle("Pluripotency genes")
+plotExpression(sce_scialdone_qc, mid_feats[1:3], x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+        ggtitle("'Mid' genes")
+plotExpression(sce_scialdone_qc, mid_feats[4:6], x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    ggtitle("'Mid' genes")
+plotExpression(sce_scialdone_qc, mid_feats[7:9], x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    ggtitle("'Mid' genes")
+plotExpression(sce_scialdone_qc, later_feats[1:3], x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    ggtitle("'Later' genes")
+plotExpression(sce_scialdone_qc, later_feats[4:6], x = "cellCategory", 
+               colour_by = "hier_cluster", ncol = 1) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    ggtitle("'Later' genes")
+```
+ 
+These scRNA-seq data certainly capture known biology during embryonic differentiation from E6.5 to E7.5.
+
+# Ordering cells in pseudotime
+
+
+## Diffusion Pseudotime
+
+A first approach to ordering cells in pseudotime is "diffusion pseudotime", or DPT. This approach measures transitions on all length scales between cells using diffusion-like random walks. This allows us to identify cells that undergo branching decisions or are in metastable states. 
+
+We define a "root cell" for the DPT calculation as a cell with high *Pou5f1*, *Nanog* and *Podxl* expression, using this as an example of a more "pluripotent" cell. The diffusion pseudotime values for the other cells are relative to this cell. This ensures that diffusion pseudotime will run in the "right" direction, that is increased differentiation as pseudotime increases. The diffusion pseudotime values for the other cells are relative to this cell. 
+
+A plot of the first two diffusion map components as computed with DPT shows some separation of the different cell populations based on FACS marker values (a), and no separation of cells by plate used for processing (b).
+
+```{r diff-pseudotime, fig.width=10}
+library(dpt)
+ww <- which(sce_scialdone_qc$cellCategory == "E6.5" & 
+        exprs(sce_scialdone_qc)[pluri_feats[1],] > 9 &
+        exprs(sce_scialdone_qc)[pluri_feats[2],] > 8 &
+        exprs(sce_scialdone_qc)[pluri_feats[3],] > 6)
+sce_scialdone_qc$root_cell <- FALSE
+sce_scialdone_qc$root_cell[ww[1]] <- TRUE
+
+ts <- Transitions(sce_scialdone_qc)
+pt <- dpt(ts, branching = TRUE, root = which(sce_scialdone_qc$root_cell))
+ev <- eigen(as.matrix(ts@transitions), TRUE)$vectors
+dm <- as.data.frame(ev[, -1])
+colnames(dm) <- paste0('DC', seq_len(ncol(dm)))
+redDim(sce_scialdone_qc) <- as.matrix(dm)
+sce_scialdone_qc$DPT <- pt$DPT / diff(range( pt$DPT))
+sce_scialdone_qc$DPT_rank <- rank(sce_scialdone_qc$DPT)
+sce_scialdone_qc$DPT_branch <- pt$Branch
+
+plot_dpt(ts, pt, 1:2)
+
+p1 <- plotReducedDim(sce_scialdone_qc, colour_by = "cellCategory") + 
+    theme(legend.position = "bottom") +
+    ggtitle("Diffusion map showing FACS cell categories")
+p2 <- plotReducedDim(sce_scialdone_qc, colour_by = "hier_cluster") + 
+    theme(legend.position = "bottom") +
+    ggtitle("Diffusion map showing hierarchical cluster")
+plot_grid(p1, p2, labels = letters)
+
+```
+
+Of course, the DPT reduced-dimension plot is almost identical to the earlier diffusion maps (`dpt` has a slightly different implementation).
+
+First, we can look at DPT in relation to previous hierarchical clustering of the cells as well as the defined FACS/embryo stage cell categories. We see that the cell clusters have a strong relationship to DPT. For example, hierarchical cluster 1 (which contains most of the E6.5 cells) has low DPT values/ranks. We see that Flk+ cells occupy the middle DPT range, and CD41+ cells generally have high DPT values. This is encouraging, as it indicates that the DPT trajectory is capturing the differentiation process of interest in these data.
+
+```{r dpt-by-cluster, fig.width=10}
+p1 <- plotPhenoData(sce_scialdone_qc, 
+              aes(x = hier_cluster, y = DPT, colour = cellCategory)) +
+    theme(legend.position = "bottom", legend.text = element_text(size = 8))
+p2 <- plotPhenoData(sce_scialdone_qc, 
+              aes(x = hier_cluster, y = DPT_rank, colour = cellCategory)) +
+        theme(legend.position = "bottom", legend.text = element_text(size = 8))
+plot_grid(p1, p2, labels = letters)
+```
+
+We can look at the behaviour of specific genes over diffusion pseudotime. We can use DPT either as a continuous measurement of pseudotime, or use DPT rank to have a discrete pseudotemporal ordering of cells. We see from both kind of plot below that *Pou5f1* is highly expressed in almost all E6.5 cells, and then decreases steadily in expression with pseudotime. *Nanog* is highly expressed earlier in DPT and decreases steadily to near-zero for high DPT. *Podxl* is almost ubiquitously expressed across all genes, so does not show a particularly strong relationship to DPT.
+
+```{r cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=9, fig.height=5}
+plotExpression(sce_scialdone_qc, pluri_feats, "DPT", 
+               colour_by = "cellCategory", show_violin = FALSE, 
+               show_smooth = FALSE, ncol = 3) +
+    geom_smooth(aes(group = 1), linetype = 2, colour = "firebrick",
+                alpha = 0.5, se = TRUE, method = "loess") +
+    coord_cartesian(ylim = c(0, 9)) +
+    theme(legend.position = "bottom") + ggtitle("Expression against DPT")
+plotExpression(sce_scialdone_qc, pluri_feats, "DPT_rank", 
+               colour_by = "cellCategory", show_violin = FALSE, 
+               show_smooth = FALSE, ncol = 3) +
+    geom_smooth(aes(group = 1), linetype = 2, colour = "firebrick",
+                alpha = 0.5, se = TRUE, span = 0.75, method = "loess") +
+    theme(legend.position = "bottom") + ggtitle("Expression against DPT rank")
+plotExpression(sce_scialdone_qc, pluri_feats, "DPT_rank", 
+               colour_by = "hier_cluster", show_violin = FALSE, 
+               show_smooth = FALSE, ncol = 3) +
+    geom_smooth(aes(group = 1), linetype = 2, colour = "firebrick",
+                alpha = 0.5, se = TRUE, span = 0.75, method = "loess") +
+    theme(legend.position = "bottom") + ggtitle("Expression against DPT rank")
+
+```
+
+The discrete values for DPT give cleaner, more interpretable plots in this case, so we will use these values below.
+
+Plotting expression against DPT rank for the 'mid' genes reveals some of them to have a peak in expression levels in the middle of the DPT range (*Bmp4*, *Cxcr4* and *Tbx6*), while some have peaks in expression late in DPT (*Hhex*, *Hoxb5*, *Myzap* and *Stab1*). *Lefty2* decreases mildly in expression over DPT, while *Smtnl2* is highly expressed across DPT, increasing in expression somewhat.
+
+```{r cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=9, fig.height=10}
+plotExpression(sce_scialdone_qc, mid_feats, "DPT_rank", 
+               colour_by = "cellCategory", show_violin = FALSE, 
+               show_smooth = FALSE, ncol = 3) +
+    geom_smooth(aes(group = 1), linetype = 2, colour = "firebrick",
+                alpha = 0.5, se = TRUE, span = 0.75, method = "loess") +
+    theme(legend.position = "bottom") + ggtitle("Expression against DPT rank")
+
+```
+
+The 'later' set of genes convincingly display increased expression with DPT. All six of these genes show virtually no expression in E6.5 cells and then increase sharply, with only *Sox7* showing a dip in expression at the high end of DPT.
+
+```{r cache=FALSE, echo=T, eval=T, message=F, warning=F, fig.align="center", fig.width=9, fig.height=7}
+plotExpression(sce_scialdone_qc, later_feats, "DPT_rank", 
+               colour_by = "cellCategory", show_violin = FALSE, 
+               show_smooth = FALSE, ncol = 3) +
+    geom_smooth(aes(group = 1), linetype = 2, colour = "firebrick",
+                alpha = 0.5, se = TRUE, span = 0.75, method = "loess") +
+    theme(legend.position = "bottom") + ggtitle("Expression against DPT rank")
+
+```
+
+
+# Save processed data to disk
+
+Finally, let us save the QC'd version of the data that can be used for any 
+subsequent analyses.
+
+```{r save-data}
+saveRDS(sce_scialdone_qc, file = "scialdone_sce_qc.rds")
+```
+
+---
+
+# Technical stuff
+
+
+Scater has been tested on Mac OS X and Linux environments and requires the R packages:
+
+* Biobase
+* BiocGenerics
+* ggplot2
+* methods
+
+and imports the packages:
+
+* biomaRt
+* data.table
+* dplyr
+* edgeR
+* grid
+* limma
+* matrixStats
+* plyr
+* reshape2
+* rhdf5
+* rjson
+* viridis
+
+This case study was run using the following platform and R package versions:  
+\  
+
+```{r, echo=FALSE, eval=TRUE}
+
+sessionInfo()
+
+```
+
