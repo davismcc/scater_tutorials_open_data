@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/23770/davismcc/scater_tutorials_open_data.svg)](https://zenodo.org/badge/latestdoi/23770/davismcc/scater_tutorials_open_data)
+
 # `scater` tutorials with open-access data
 
 This repository contains a set of tutorials using the
