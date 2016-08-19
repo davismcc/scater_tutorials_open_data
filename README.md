@@ -16,7 +16,7 @@ Datasets used as examples here include:
 
 * 3000 mouse cortex cells from
 [Zeisel et al, 2015](http://science.sciencemag.org/content/347/6226/1138).
-* 1200 mouse embryonic cells from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html)
+* 1200 mouse embryonic cells from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html).
 
 More will follow. The analyses shown were carried out on a recent
 Macbook Pro laptop, so large computational resources are not required
@@ -28,7 +28,7 @@ available.
 * For the mouse cortex data, see the
 [Linnarsson Lab website](http://linnarssonlab.org/cortex/).
 * For the mouse embryonic cell data, see the
-[Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016)
+[Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016).
 
 
 ## See for yourself
