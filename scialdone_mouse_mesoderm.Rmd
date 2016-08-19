@@ -14,6 +14,7 @@ output:
 # Investigating mouse mesoderm differentiation data
 
 This analysis requires `scater`, as well as the following CRAN packages:
+
 * `cowplot`
 * `DT`
 * `knitr`
@@ -21,8 +22,11 @@ This analysis requires `scater`, as well as the following CRAN packages:
 * `dynamicTreeCut`
 * `RColorBrewer`
 * `gplots`
+
 and the following Bioconductor packages:
+
 * `scran`
+
 and the `dpt` package can be installed from Fabian Theis's webpage:
 ```
 install.packages('devtools')
@@ -47,10 +51,7 @@ opts_chunk$set(cache = FALSE, warning = FALSE)
 
 The mouse mesoderm data from [Scialdone et al, 2016](http://www.nature.com/nature/journal/v535/n7611/full/nature18633.html) have been made available as gene-level counts at [Cambridge University Stem Cells website](http://gastrulation.stemcells.cam.ac.uk/scialdone2016).
 
-Here we download the data directly from the Linnarrsson Lab page and produce an 
-`SCESet` object, which is the data structure used in the `scater` package.
-
-Here we first download the data (`counts.gz` and unzip to `counts.txt`) and the cell metadata (`metadata.txt`) to the directory containing this Rmd file and read in the data and metadata from those files.
+We first need to download the data (`counts.gz` and unzip to `counts.txt`) and the cell metadata (`metadata.txt`) to the directory containing this Rmd file and read in the data and metadata from those files.
 
 First load the data for metadata for mRNA genes:
 
