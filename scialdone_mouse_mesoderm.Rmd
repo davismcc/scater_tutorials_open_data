@@ -602,6 +602,8 @@ For further analyses, we focus on the significantly correlated HVGs for which an
 
 ```{r choosing-hvgs}
 chosen <- unique(c(var.cor$gene1[sig.cor], var.cor$gene2[sig.cor]))
+fData(sce_scialdone_qc)$high_var_gene <- FALSE
+fData(sce_scialdone_qc)[chosen, "high_var_gene"] <- TRUE
 norm.exprs <- get_exprs(sce_scialdone_qc, "norm_exprs_resid")[chosen,, drop = FALSE]
 ```
 
