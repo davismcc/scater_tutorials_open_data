@@ -34,7 +34,7 @@ First load the data for metadata for mRNA genes:
 
 ```{r load-data-mrna, cache=FALSE}
 ## download mRNA data
-mrna_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
+mrna_meta <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
               nrows = 10, header = FALSE)
 mrna_meta <- as.data.frame(t(mrna_meta), stringsAsFactors = FALSE)
 colnames(mrna_meta) <- mrna_meta[2,]
@@ -46,7 +46,7 @@ datatable(mrna_meta[1:6,])
 Now load the count data for the mRNA genes:
 
 ```{r load-data-mrna2, cache=FALSE}
-mrna <- fread("http://linnarssonlab.org/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
+mrna <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
               skip = 10)
 mrna <- as.data.frame(mrna)
 rownames(mrna) <- mrna$V1
@@ -60,7 +60,7 @@ Next load the metadata for mitochondrial genes:
 
 ```{r load-data-mtgenes, cache=FALSE}
 ## download data for mitochondrial genes
-mtgenes_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_mito_17-Aug-2014.txt",
+mtgenes_meta <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_mito_17-Aug-2014.txt",
                       nrows = 10, header = FALSE)
 mtgenes_meta <- as.data.frame(t(mtgenes_meta), stringsAsFactors = FALSE)
 colnames(mtgenes_meta) <- mtgenes_meta[2,]
@@ -72,7 +72,7 @@ datatable(mtgenes_meta[1:6,])
 Followed by the count data for mitochondrial genes:
 
 ```{r load-data-mtgenes2, cache=FALSE}
-mtgenes <- fread("http://linnarssonlab.org/blobs/cortex/expression_mito_17-Aug-2014.txt",
+mtgenes <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_mito_17-Aug-2014.txt",
                  skip = 10)
 mtgenes <- as.data.frame(mtgenes)
 rownames(mtgenes) <- mtgenes$V1
@@ -85,7 +85,7 @@ Finally load the metadata for ERCC spike-ins:
 
 ```{r load-data-ercc, cache=FALSE}
 ## download data for ERCC spike-ins
-ercc_meta <- fread("http://linnarssonlab.org/blobs/cortex/expression_spikes_17-Aug-2014.txt",
+ercc_meta <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_spikes_17-Aug-2014.txt",
                    nrows = 10, header = FALSE)
 ercc_meta <- as.data.frame(t(ercc_meta), stringsAsFactors = FALSE)
 colnames(ercc_meta) <- ercc_meta[2,]
@@ -97,7 +97,7 @@ datatable(ercc_meta[1:6,])
 and then the count data for the ERCC spike-ins:
 
 ```{r load-data-ercc2, cache=FALSE}
-ercc <- fread("http://linnarssonlab.org/blobs/cortex/expression_spikes_17-Aug-2014.txt",
+ercc <- fread("https://storage.googleapis.com/linnarsson-lab-www-blobs/blobs/cortex/expression_spikes_17-Aug-2014.txt",
                    skip = 10)
 ercc <- as.data.frame(ercc)
 rownames(ercc) <- ercc$V1
@@ -213,7 +213,7 @@ done from the sample meta-data using the automated QC metrics generated above,
 any additional sequencing metrics from sequencing aligner/mapping software,  
 and additional cell phenotypes such as from imaging. For the sake of 
 demonstration, here we focus on four metrics. Others you may want to consider 
-are % reads mapped to mitochondrial genes,  library PCR duplication rate,  
+are % reads mapped to mitochondrial genes, library PCR duplication rate,  
 and mean sequencing bias per cell.  
 
 ```plotPhenoData()``` can be used to explore specific sample meta-data values. 
@@ -276,7 +276,7 @@ plot(sce_zeisel_raw, block1 = "level1class", colour_by = "level2class",
 
 We observe that certain cell types (e.g. oligodendrocytes and microglia) have a
 larger proportion of cells with their libraries accounted for by a small number
-of cells than to pyramidal cells. 
+of features than to pyramidal cells. 
 
 ```{r cum-exprs-plots-use, fig.height=9, fig.width=10, fig.align="center"}
 plot(sce_zeisel_raw, block1 = "level1class", colour_by = "use", 
@@ -288,7 +288,7 @@ opted not to use have a large proportion of their library accounted for by a
 handful of very highly-expressed genes.
 
 Scater allows users total flexibility to run their favourite dimension reduction
-methods,  as decribed [here]() and in the supporting help files. Here we use 
+methods,  as described [here]() and in the supporting help files. Here we use 
 ```plotPCA()``` to further explore the cells. The t-SNE plot works particularly 
 nicely for this dataset to separate the different cell types as identified by 
 Zeisel et al.
@@ -416,7 +416,7 @@ However, number of genes detected often has a strong technical component due
 to variably recovered RNA, reverse transcription, or library amplification. Its
 effect can also be notably non-linear,  affecting low expressed and high 
 expressed genes differently. The ```plotQC()``` function can be used to explore 
-the the marginal % variance explained (per gene) of the various technical 
+the marginal % variance explained (per gene) of the various technical 
 factors. In the second plot we can see that it's not unusual for gene coverage 
 to explain more than 10% of the expression variance of a gene. 
 
@@ -613,12 +613,12 @@ plt_pca_endog_norm <- plotPCA(
 multiplot(plt_pca_prenorm, plt_pca_endog_norm, cols = 2)
 ```
 
-Here, where there are a number of distrinct cell types, we see that 
+Here, where there are a large number of distinct cell types, we see that 
 size-factor normalisation has little effect on the large-scale structure in the 
 dataset as determined by PCA.
 
 However, in the t-SNE plots below the overall structure is very similar in both 
-cases, but we see that the normalised data brings combines the two clusters of 
+cases, but we see that the normalised data combines the two clusters of 
 oligodendrocytes from the un-normalised plot, and that the microglia and 
 endothelial-mural cells are better differentiated with the normalised data.
 
